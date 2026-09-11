@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.wrangler/
+coverage/
+playwright-report/
+test-results/
+.env
+.env.*
+!.env.example
+*.local
+
+# Local QA captures and the original spec bundle stay out of the public repo.
+artifacts/
+home-measure-spec.zip
+*.tsbuildinfo

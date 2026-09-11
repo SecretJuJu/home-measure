@@ -1,0 +1,23 @@
+{
+  "name": "home-measure",
+  "private": true,
+  "packageManager": "pnpm@10.14.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @home-measure/web dev",
+    "lint": "pnpm -r --if-present lint",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "test:e2e": "pnpm --filter @home-measure/web test:e2e",
+    "build": "pnpm --filter @home-measure/web build && pnpm --filter @home-measure/worker build",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:e2e && pnpm build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.10.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "^8.70.0"
+  }
+}
