@@ -1,4 +1,5 @@
 export { HttpApiClient, type ApiClient } from "./api-client";
+export { AuthClient, type AccountUser, type AuthOutcome } from "./auth-client";
 export { HomeMeasureDatabase } from "./database";
 export {
   createLocalFirstRepository,

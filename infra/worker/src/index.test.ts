@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { createApp, type Env } from "./index";
 
@@ -24,10 +24,9 @@ interface StoredMutation {
 
 interface StoredUser {
   id: string;
-  email: string;
+  username: string;
   name: string | null;
-  provider: "development" | "google";
-  providerUserId: string;
+  passwordHash: string;
 }
 
 interface StoredSession {
@@ -36,20 +35,11 @@ interface StoredSession {
   expiresAt: number;
 }
 
-interface StoredOAuthTransaction {
-  stateHash: string;
-  verifier: string;
-  nonce: string;
-  expiresAt: number;
-  usedAt: number | null;
-}
-
 class FakeD1 {
   public readonly statements: Array<{ query: string; values: unknown[] }> = [];
   private readonly mutations = new Map<string, StoredMutation>();
   private readonly users: StoredUser[] = [];
   private readonly sessions: StoredSession[] = [];
-  private readonly oauthTransactions = new Map<string, StoredOAuthTransaction>();
 
   public constructor(
     private readonly properties: StoredProperty[] = [],
@@ -70,17 +60,6 @@ class FakeD1 {
   }
 
   private first<T>(query: string, values: unknown[]): T | null {
-    if (query.includes("FROM oauth_transactions")) {
-      const stateHash = values[0];
-      const transaction = typeof stateHash === "string" ? this.oauthTransactions.get(stateHash) : undefined;
-      return transaction ? {
-        state_hash: transaction.stateHash,
-        pkce_verifier: transaction.verifier,
-        nonce: transaction.nonce,
-        expires_at: transaction.expiresAt,
-        used_at: transaction.usedAt,
-      } as T : null;
-    }
     if (query.includes("FROM idempotent_mutations")) {
       const userId = values[0];
       const mutationId = values[1];
@@ -94,14 +73,12 @@ class FakeD1 {
         ? this.sessions.find((candidate) => candidate.id === sessionId && candidate.expiresAt > timestamp)
         : undefined;
       const user = session ? this.users.find((candidate) => candidate.id === session.userId) : undefined;
-      return user ? { id: user.id, email: user.email, name: user.name } as T : null;
+      return user ? { id: user.id, username: user.username, name: user.name } as T : null;
     }
-    if (query.includes("FROM users WHERE provider")) {
-      const providerUserId = values[0];
-      const user = typeof providerUserId === "string"
-        ? this.users.find((candidate) => candidate.provider === "google" && candidate.providerUserId === providerUserId)
-        : undefined;
-      return user ? { id: user.id, email: user.email, name: user.name } as T : null;
+    if (query.includes("FROM users WHERE username")) {
+      const username = values[0];
+      const user = typeof username === "string" ? this.findUser(username) : undefined;
+      return user ? { id: user.id, username: user.username, name: user.name, password_hash: user.passwordHash } as T : null;
     }
     if (query.includes("FROM photos")) {
       const photoId = values[0];
@@ -142,49 +119,20 @@ class FakeD1 {
   }
 
   private run(query: string, values: unknown[]): { success: true; meta: { changes: number } } {
-    if (query.includes("DELETE FROM oauth_transactions")) {
-      const timestamp = values[0];
-      if (typeof timestamp === "number") {
-        for (const [key, transaction] of this.oauthTransactions) {
-          if (transaction.expiresAt <= timestamp) this.oauthTransactions.delete(key);
-        }
-      }
-    }
-    if (query.includes("INSERT INTO oauth_transactions")) {
-      const [stateHash, verifier, nonce, expiresAt] = values;
-      if (typeof stateHash === "string" && typeof verifier === "string" && typeof nonce === "string" && typeof expiresAt === "number") {
-        this.oauthTransactions.set(stateHash, { stateHash, verifier, nonce, expiresAt, usedAt: null });
-      }
-    }
-    if (query.includes("UPDATE oauth_transactions SET used_at")) {
-      const usedAt = values[0];
-      const stateHash = values[1];
-      const timestamp = values[2];
-      const transaction = typeof stateHash === "string" ? this.oauthTransactions.get(stateHash) : undefined;
-      if (transaction && transaction.usedAt === null && typeof usedAt === "number" && typeof timestamp === "number" && transaction.expiresAt > timestamp) {
-        transaction.usedAt = usedAt;
-        return { success: true, meta: { changes: 1 } };
-      }
-      return { success: true, meta: { changes: 0 } };
-    }
     if (query.includes("INSERT OR IGNORE INTO users")) {
-      const [id, email, name, providerUserId] = values;
-      if (typeof id === "string" && typeof email === "string" && (typeof name === "string" || name === null) && typeof providerUserId === "string"
-        && !this.users.some((candidate) => candidate.id === id)) {
-        this.users.push({ id, email, name, provider: "development", providerUserId });
-      }
-    }
-    if (query.includes("INSERT INTO users") && query.includes("'google'")) {
-      const [id, email, name, providerUserId] = values;
-      if (typeof id === "string" && typeof email === "string" && (typeof name === "string" || name === null) && typeof providerUserId === "string") {
-        const existing = this.users.find((candidate) => candidate.provider === "google" && candidate.providerUserId === providerUserId);
-        if (existing) {
-          existing.email = email;
-          existing.name = name;
-        } else {
-          this.users.push({ id, email, name, provider: "google", providerUserId });
-        }
-      }
+      // Mirrors the unique index on username: a taken name reports zero changes instead of throwing.
+      const [id, username, passwordHash, name] = query.includes("password_hash, name")
+        ? [values[0], values[1], values[2], values[3]]
+        : [values[0], values[1], "", values[2]];
+      if (typeof id !== "string" || typeof username !== "string") return { success: true, meta: { changes: 0 } };
+      if (this.findUser(username) || this.users.some((candidate) => candidate.id === id)) return { success: true, meta: { changes: 0 } };
+      this.users.push({
+        id,
+        username,
+        name: typeof name === "string" ? name : null,
+        passwordHash: typeof passwordHash === "string" ? passwordHash : "",
+      });
+      return { success: true, meta: { changes: 1 } };
     }
     if (query.includes("INSERT INTO sessions")) {
       const [id, userId, expiresAt] = values;
@@ -221,8 +169,16 @@ class FakeD1 {
     return { success: true, meta: { changes: 1 } };
   }
 
-  public latestOAuthTransaction(): StoredOAuthTransaction | undefined {
-    return [...this.oauthTransactions.values()].at(-1);
+  private findUser(username: string): StoredUser | undefined {
+    return this.users.find((candidate) => candidate.username.toLowerCase() === username.toLowerCase());
+  }
+
+  public storedPasswordHash(username: string): string | undefined {
+    return this.findUser(username)?.passwordHash;
+  }
+
+  public userCount(): number {
+    return this.users.length;
   }
 }
 
@@ -268,7 +224,7 @@ describe("Worker API authentication and validation", () => {
     const response = await app.fetch(request("/api/properties"), bindings(new FakeD1(), {
       ENVIRONMENT: "production",
       DEV_AUTH_USER_ID: "user_0001",
-      DEV_AUTH_EMAIL: "developer@example.test",
+      DEV_AUTH_USERNAME: "developer",
     }));
 
     expect(response.status).toBe(401);
@@ -280,7 +236,7 @@ describe("Worker API authentication and validation", () => {
     const response = await app.fetch(request("/api/properties/property_001"), bindings(db, {
       ENVIRONMENT: "development",
       DEV_AUTH_USER_ID: "user_0001",
-      DEV_AUTH_EMAIL: "developer@example.test",
+      DEV_AUTH_USERNAME: "developer",
     }));
 
     expect(response.status).toBe(404);
@@ -299,7 +255,7 @@ describe("Worker API authentication and validation", () => {
     }), bindings(db, {
       ENVIRONMENT: "development",
       DEV_AUTH_USER_ID: "user_0001",
-      DEV_AUTH_EMAIL: "developer@example.test",
+      DEV_AUTH_USERNAME: "developer",
     }));
 
     expect(response.status).toBe(400);
@@ -308,7 +264,7 @@ describe("Worker API authentication and validation", () => {
 });
 
 describe("Worker photo binary upload", () => {
-  const owner = { ENVIRONMENT: "development", DEV_AUTH_USER_ID: "user_0001", DEV_AUTH_EMAIL: "developer@example.test" } as const;
+  const owner = { ENVIRONMENT: "development", DEV_AUTH_USER_ID: "user_0001", DEV_AUTH_USERNAME: "developer" } as const;
   const ownerProperty: StoredProperty = { id: "property_001", userId: "user_0001", name: "Owner home" };
   const ownerPhoto = (): StoredPhoto => ({
     id: "photo_00001",
@@ -370,100 +326,33 @@ describe("Worker photo binary upload", () => {
   });
 });
 
-function base64UrlJson(value: Record<string, unknown>): string {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
-}
+describe("username and password accounts", () => {
+  const credentials = { username: "field.owner", password: "measure-tape-2026" };
 
-function textArrayBuffer(value: string): ArrayBuffer {
-  const source = new TextEncoder().encode(value);
-  const copy = new Uint8Array(source.byteLength);
-  copy.set(source);
-  return copy.buffer;
-}
-
-async function signedGoogleToken(privateKey: CryptoKey, claims: Record<string, unknown>, kid = "google-test-key"): Promise<string> {
-  const header = base64UrlJson({ alg: "RS256", kid, typ: "JWT" });
-  const payload = base64UrlJson(claims);
-  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", privateKey, textArrayBuffer(`${header}.${payload}`));
-  let binary = "";
-  for (const byte of new Uint8Array(signature)) binary += String.fromCharCode(byte);
-  return `${header}.${payload}.${btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "")}`;
-}
-
-describe("Google OAuth callback and session boundary", () => {
-  let privateKey: CryptoKey;
-  let publicJwk: JsonWebKey;
-
-  beforeAll(async () => {
-    const keyPair = await crypto.subtle.generateKey(
-      { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
-      true,
-      ["sign", "verify"],
-    ) as CryptoKeyPair;
-    privateKey = keyPair.privateKey;
-    publicJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
-  });
-
-  function oauthEnv(db: FakeD1): Env {
-    return bindings(db, {
-      ENVIRONMENT: "production",
-      GOOGLE_CLIENT_ID: "google-client-id.apps.exampleusercontent.com",
-      GOOGLE_CLIENT_SECRET: "google-client-secret-for-tests",
-      OAUTH_REDIRECT_URI: "https://example.test/api/auth/google/callback",
+  function post(path: string, body: unknown, cookie?: string): Request {
+    return request(path, {
+      method: "POST",
+      headers: cookie ? { "content-type": "application/json", cookie } : { "content-type": "application/json" },
+      body: JSON.stringify(body),
     });
   }
 
-  async function start(app: ReturnType<typeof createApp>, env: Env): Promise<{ state: string; nonce: string; response: Response }> {
-    const response = await app.fetch(request("/api/auth/google"), env);
-    const location = response.headers.get("location");
-    expect(response.status).toBe(302);
-    expect(location).not.toBeNull();
-    const authorizationUrl = new URL(location!);
-    const state = authorizationUrl.searchParams.get("state");
-    expect(authorizationUrl.origin).toBe("https://accounts.google.com");
-    expect(authorizationUrl.searchParams.get("code_challenge_method")).toBe("S256");
-    expect(state).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    return { state: state!, nonce: "", response };
-  }
-
-  it("uses PKCE and a D1 transaction, verifies a signed ID token, issues a secure cookie, and invalidates it on logout", async () => {
+  it("registers an account, issues a secure session cookie, and invalidates it on logout", async () => {
+    // #given
     const db = new FakeD1();
-    let token = "";
-    const app = createApp({
-      fetch: async (input) => {
-        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-        if (url === "https://oauth2.googleapis.com/token") return Response.json({ id_token: token });
-        if (url === "https://www.googleapis.com/oauth2/v3/certs") return Response.json({ keys: [{ ...publicJwk, kid: "google-test-key", use: "sig", alg: "RS256" }] });
-        return new Response(null, { status: 404 });
-      },
-    });
-    const env = oauthEnv(db);
-    const authorization = await start(app, env);
-    const transaction = db.latestOAuthTransaction();
-    expect(transaction).toBeDefined();
-    expect(authorization.response.headers.get("location")).not.toContain(transaction!.verifier);
-    token = await signedGoogleToken(privateKey, {
-      iss: "https://accounts.google.com",
-      aud: env.GOOGLE_CLIENT_ID,
-      sub: "google-subject-123",
-      email: "owner@example.test",
-      email_verified: true,
-      nonce: transaction!.nonce,
-      iat: Math.floor(Date.now() / 1_000) - 10,
-      exp: Math.floor(Date.now() / 1_000) + 600,
-      name: "Home Owner",
-    });
+    const app = createApp();
+    const env = bindings(db, { ENVIRONMENT: "production" });
 
-    const callback = await app.fetch(request(`/api/auth/google/callback?code=authorization-code&state=${authorization.state}`), env);
-    const setCookie = callback.headers.get("set-cookie");
-    expect(callback.status).toBe(303);
-    expect(callback.headers.get("location")).toBe("https://example.test/");
+    // #when
+    const registered = await app.fetch(post("/api/auth/register", credentials), env);
+
+    // #then
+    const setCookie = registered.headers.get("set-cookie");
+    expect(registered.status).toBe(200);
+    expect(await registered.json()).toEqual({ user: { id: expect.any(String), username: "field.owner", name: null } });
     expect(setCookie).toMatch(/^home_measure_session=[A-Za-z0-9_-]{43}; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=2592000$/);
-
-    expect((await app.fetch(request(`/api/auth/google/callback?code=authorization-code&state=${authorization.state}`), env)).status).toBe(400);
+    expect(db.storedPasswordHash("field.owner")).toMatch(/^pbkdf2-sha256\$210000\$[A-Za-z0-9_-]+\$[A-Za-z0-9_-]{43}$/);
+    expect(db.storedPasswordHash("field.owner")).not.toContain(credentials.password);
 
     const cookie = setCookie!.split(";", 1)[0]!;
     expect((await app.fetch(request("/api/me", { headers: { cookie } }), env)).status).toBe(200);
@@ -473,74 +362,65 @@ describe("Google OAuth callback and session boundary", () => {
     expect((await app.fetch(request("/api/me", { headers: { cookie } }), env)).status).toBe(401);
   });
 
-  it("rejects mismatched or expired OAuth state before exchanging a code", async () => {
+  it("signs an existing account back in and refuses a wrong password or an unknown name alike", async () => {
+    // #given
     const db = new FakeD1();
-    let fetchCalls = 0;
-    const app = createApp({ fetch: async () => { fetchCalls += 1; return new Response(null, { status: 500 }); } });
-    const env = oauthEnv(db);
-    await start(app, env);
-
-    const response = await app.fetch(request(`/api/auth/google/callback?code=authorization-code&state=${"a".repeat(43)}`), env);
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "oauth_failed" });
-    expect(fetchCalls).toBe(0);
-
-    const validState = await start(app, env);
-    const transaction = db.latestOAuthTransaction();
-    transaction!.expiresAt = 0;
-    expect((await app.fetch(request(`/api/auth/google/callback?code=authorization-code&state=${validState.state}`), env)).status).toBe(400);
-    expect(fetchCalls).toBe(0);
-  });
-
-  it("fails closed only on OAuth endpoints when OAuth runtime configuration is absent", async () => {
     const app = createApp();
-    const env = bindings(new FakeD1());
-    expect((await app.fetch(request("/api/auth/google"), env)).status).toBe(503);
-    expect((await app.fetch(request("/api/properties"), env)).status).toBe(401);
+    const env = bindings(db, { ENVIRONMENT: "production" });
+    await app.fetch(post("/api/auth/register", credentials), env);
+
+    // #when
+    const signedIn = await app.fetch(post("/api/auth/login", credentials), env);
+    const wrongPassword = await app.fetch(post("/api/auth/login", { ...credentials, password: "measure-tape-2027" }), env);
+    const unknownUser = await app.fetch(post("/api/auth/login", { ...credentials, username: "nobody.here" }), env);
+
+    // #then
+    expect(signedIn.status).toBe(200);
+    expect(signedIn.headers.get("set-cookie")).toMatch(/^home_measure_session=[A-Za-z0-9_-]{43};/);
+    expect([wrongPassword.status, unknownUser.status]).toEqual([401, 401]);
+    expect(await wrongPassword.json()).toEqual({ error: "unauthorized" });
+    expect(await unknownUser.json()).toEqual({ error: "unauthorized" });
   });
 
-  it("rejects ID tokens with invalid claims or signatures", async () => {
+  it("keeps a username unique and rejects credentials that are too weak to accept", async () => {
+    // #given
     const db = new FakeD1();
-    let token = "";
-    const app = createApp({
-      fetch: async (input) => {
-        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-        if (url === "https://oauth2.googleapis.com/token") return Response.json({ id_token: token });
-        return Response.json({ keys: [{ ...publicJwk, kid: "google-test-key", use: "sig", alg: "RS256" }] });
-      },
-    });
-    const env = oauthEnv(db);
-    const invalidIssuer = await start(app, env);
-    const firstTransaction = db.latestOAuthTransaction()!;
-    token = await signedGoogleToken(privateKey, {
-      iss: "https://attacker.example.test",
-      aud: env.GOOGLE_CLIENT_ID,
-      sub: "google-subject-123",
-      email: "owner@example.test",
-      email_verified: true,
-      nonce: firstTransaction.nonce,
-      iat: Math.floor(Date.now() / 1_000) - 10,
-      exp: Math.floor(Date.now() / 1_000) + 600,
-    });
-    expect((await app.fetch(request(`/api/auth/google/callback?code=code-one&state=${invalidIssuer.state}`), env)).status).toBe(400);
+    const app = createApp();
+    const env = bindings(db, { ENVIRONMENT: "production" });
+    await app.fetch(post("/api/auth/register", credentials), env);
 
-    const invalidSignature = await start(app, env);
-    const secondTransaction = db.latestOAuthTransaction()!;
-    const otherPair = await crypto.subtle.generateKey(
-      { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
-      true,
-      ["sign", "verify"],
-    ) as CryptoKeyPair;
-    token = await signedGoogleToken(otherPair.privateKey, {
-      iss: "https://accounts.google.com",
-      aud: env.GOOGLE_CLIENT_ID,
-      sub: "google-subject-123",
-      email: "owner@example.test",
-      email_verified: true,
-      nonce: secondTransaction.nonce,
-      iat: Math.floor(Date.now() / 1_000) - 10,
-      exp: Math.floor(Date.now() / 1_000) + 600,
-    });
-    expect((await app.fetch(request(`/api/auth/google/callback?code=code-two&state=${invalidSignature.state}`), env)).status).toBe(400);
+    // #when
+    const taken = await app.fetch(post("/api/auth/register", { ...credentials, password: "another-password" }), env);
+    const shortPassword = await app.fetch(post("/api/auth/register", { username: "someone.new", password: "short" }), env);
+    const badUsername = await app.fetch(post("/api/auth/register", { username: "no spaces", password: "measure-tape-2026" }), env);
+
+    // #then
+    expect(taken.status).toBe(409);
+    expect(await taken.json()).toEqual({ error: "conflict" });
+    expect([shortPassword.status, badUsername.status]).toEqual([400, 400]);
+    expect(db.userCount()).toBe(1);
+  });
+
+  it("treats the username as case-insensitive so one account cannot be registered twice", async () => {
+    // #given
+    const db = new FakeD1();
+    const app = createApp();
+    const env = bindings(db, { ENVIRONMENT: "production" });
+    await app.fetch(post("/api/auth/register", credentials), env);
+
+    // #when
+    const upperCase = await app.fetch(post("/api/auth/register", { ...credentials, username: "Field.Owner" }), env);
+    const signedIn = await app.fetch(post("/api/auth/login", { ...credentials, username: "FIELD.OWNER" }), env);
+
+    // #then
+    expect(upperCase.status).toBe(409);
+    expect(signedIn.status).toBe(200);
+  });
+
+  it("refuses every data endpoint without a session", async () => {
+    const app = createApp();
+    const env = bindings(new FakeD1(), { ENVIRONMENT: "production" });
+    expect((await app.fetch(request("/api/properties"), env)).status).toBe(401);
+    expect((await app.fetch(request("/api/me"), env)).status).toBe(401);
   });
 });

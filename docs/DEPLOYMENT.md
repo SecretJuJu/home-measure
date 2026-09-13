@@ -20,17 +20,13 @@
 
 `infra/worker/wrangler.jsonc`의 R2 bucket 이름이 실제 버킷 이름과 같아야 합니다.
 
-## Worker OAuth environment
+## Worker runtime environment
 
-Google Cloud Console에서 OAuth **Web application** client를 만들고, 배포할 Worker의 정확한 `https://<host>/api/auth/google/callback`를 authorized redirect URI로 등록한다. Worker runtime에는 아래 값을 설정한다. 실제 값을 저장소, `wrangler.jsonc`, GitHub Actions 로그에 기록하지 않는다.
+Sign-in needs no runtime configuration: accounts live in D1 and passwords are hashed by the Worker
+itself. Deployment only needs the Cloudflare credentials and the D1 database ID below.
 
-| Worker binding | Classification | Purpose |
-| --- | --- | --- |
-| `GOOGLE_CLIENT_ID` | runtime variable | Google OAuth client ID |
-| `OAUTH_REDIRECT_URI` | runtime variable | Google Console에 등록한 정확한 callback URL |
-| `GOOGLE_CLIENT_SECRET` | Worker secret | OAuth authorization-code exchange credential |
-
-세 값 중 하나라도 없거나 callback URL이 `https`(localhost 개발용 `http` 예외)와 `/api/auth/google/callback` 형식을 만족하지 않으면 OAuth endpoints만 `503`으로 fail-closed 된다. D1에는 short-lived OAuth transaction과 opaque session ID만 저장하며, Google access token·refresh token·ID token은 저장하지 않는다.
+Do not set `DEV_AUTH_*` or `ENVIRONMENT=development` on a deployed Worker. Those values are ignored
+outside `ENVIRONMENT=development`, and production must stay session-only.
 
 ## Safety boundary
 

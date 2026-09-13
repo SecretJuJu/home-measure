@@ -14,6 +14,22 @@ export const clientMutationIdSchema = z
   .string()
   .regex(clientIdentifierPattern, "Expected a stable client mutation ID");
 
+/**
+ * Sign-in credentials. Accounts live in this app's own D1 table, so there is no identity provider
+ * to depend on. Usernames are compared in lower case; passwords are never stored in the clear.
+ */
+export const usernameSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^[a-z0-9][a-z0-9_.-]{2,31}$/, "Expected 3-32 characters: letters, digits, . _ or -");
+export const passwordSchema = z.string().min(10, "Use at least 10 characters").max(200);
+
+export const credentialsSchema = z.object({
+  username: usernameSchema,
+  password: passwordSchema,
+}).strict();
+
 export const millimetersSchema = z.number().finite().int().min(0).max(100_000);
 export const positiveMillimetersSchema = millimetersSchema.min(1);
 export const timestampSchema = z.number().finite().int().nonnegative();
@@ -301,6 +317,7 @@ export const measurementCreateMutationSchema = mutationEnvelopeSchema(measuremen
 export const measurementUpdateMutationSchema = mutationEnvelopeSchema(measurementUpdateSchema);
 export const photoCreateMutationSchema = mutationEnvelopeSchema(photoCreateSchema);
 
+export type Credentials = z.infer<typeof credentialsSchema>;
 export type ClientId = z.infer<typeof clientIdSchema>;
 export type ClientMutationId = z.infer<typeof clientMutationIdSchema>;
 export type RoomType = z.infer<typeof roomTypeSchema>;

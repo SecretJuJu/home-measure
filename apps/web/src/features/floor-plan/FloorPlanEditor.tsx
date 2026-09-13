@@ -19,6 +19,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { AccountControl } from "../account";
 import { checklistCompletion } from "../checklist/completion";
 import { HttpApiClient, HomeMeasureDatabase, LocalFirstRepository } from "../../local";
 import type { LocalProperty, LocalRoom } from "../../local";
@@ -851,6 +852,8 @@ export function FloorPlanEditor({
           {state.pendingOperationCount > 0 && <small>{state.pendingOperationCount}건 대기</small>}
           {online && state.syncStatus === "error" && <button type="button" className="sync-retry" onClick={() => void repository.flush()} title={state.lastSyncError ?? undefined} aria-label="동기화 다시 시도">다시 시도</button>}
         </div>
+        {/* Signing in is what lets the queue reach the server, so flush as soon as it happens. */}
+        <AccountControl onAccountChange={(account) => { if (account) void repository.flush(); }} />
       </header>
       <aside className="room-pane" aria-label="공간 목록" inert={inspectorOpen}>
         <div className="pane-heading">

@@ -153,7 +153,13 @@ test("real HTTP requests show syncing, failure and offline retry without changin
   const mutationIds: string[] = [];
   let fail = true;
   await page.route("**/api/**", async (route) => {
-    mutationIds.push((route.request().postDataJSON() as { clientMutationId: string }).clientMutationId);
+    const body = route.request().postDataJSON() as { clientMutationId?: string } | null;
+    // Only queued mutations carry an ID; the account probe answers straight away as signed out.
+    if (!body?.clientMutationId) {
+      await route.fulfill({ status: 401, body: JSON.stringify({ error: "unauthorized" }) });
+      return;
+    }
+    mutationIds.push(body.clientMutationId);
     await gate;
     await route.fulfill({ status: fail ? 503 : 200, body: "{}" });
   });

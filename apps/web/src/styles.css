@@ -730,6 +730,28 @@ summary:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent)
 .sync-indicator.syncing { color: var(--accent); }
 .sync-indicator.offline { color: var(--warning); }
 .sync-retry { padding-inline: 10px; border-color: var(--line); color: var(--ink); font-size: 11px; font-weight: 650; }
+.account-control { position: relative; display: flex; align-items: center; gap: 8px; }
+.account-control > button { padding-inline: 12px; border-color: var(--line); font-size: 12px; font-weight: 650; }
+.account-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; font-weight: 650; }
+.account-form {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 10px);
+  right: 0;
+  display: grid;
+  gap: 10px;
+  width: min(300px, 90vw);
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-overlay);
+  text-align: left;
+}
+.account-form label { gap: 6px; font-size: 11px; }
+.account-form .choice-row button { flex: 1; border-color: var(--line); font-size: 12px; }
+.account-form .choice-row button.selected { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); font-weight: 650; }
+.account-help { color: var(--muted); font-size: 11px; }
 .room-pane, .inspector-pane { min-width: 0; overflow-y: auto; overscroll-behavior: contain; gap: 14px; padding: 16px; }
 .room-pane { background: var(--surface-subtle); }
 .pane-heading { gap: 10px; }

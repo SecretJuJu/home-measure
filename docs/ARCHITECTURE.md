@@ -232,7 +232,7 @@ CREATE TABLE photos (
 ## 7. Auth
 
 MVP:
-- Google OAuth 단일 provider 권장
+- 자체 아이디·비밀번호 계정 (PBKDF2 해시, D1 세션)
 - 비밀번호 직접 관리하지 않음
 - Worker callback
 - D1 session
@@ -391,7 +391,7 @@ production
 Cloudflare binding:
 - DB
 - PHOTO_BUCKET
-- OAuth secrets
+- 세션 쿠키와 비밀번호 해시
 
 secret은 wrangler secret으로 관리.
 

@@ -3,6 +3,7 @@ import {
   checklistUpdateMutationSchema,
   clientIdSchema,
   clientMutationIdSchema,
+  credentialsSchema,
   emptyMutationSchema,
   measurementCreateMutationSchema,
   measurementUpdateMutationSchema,
@@ -12,6 +13,7 @@ import {
   roomCreateMutationSchema,
   roomLayoutMutationSchema,
   roomUpdateMutationSchema,
+  usernameSchema,
 } from "@home-measure/domain";
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
@@ -21,23 +23,17 @@ export interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   PHOTO_BUCKET: R2Bucket;
-  /** Google OAuth web client ID. Required only by the OAuth endpoints. */
-  GOOGLE_CLIENT_ID?: string;
-  /** Google OAuth web client secret. Keep this in a Worker secret, never wrangler.jsonc. */
-  GOOGLE_CLIENT_SECRET?: string;
-  /** Exact registered callback URL, ending in /api/auth/google/callback. */
-  OAUTH_REDIRECT_URI?: string;
   /** Must be exactly `development` before the development identity is considered. */
   ENVIRONMENT?: string;
   /** Development-only identity. It is ignored outside ENVIRONMENT=development. */
   DEV_AUTH_USER_ID?: string;
-  DEV_AUTH_EMAIL?: string;
+  DEV_AUTH_USERNAME?: string;
   DEV_AUTH_NAME?: string;
 }
 
 interface AuthUser {
   id: string;
-  email: string;
+  username: string;
   name: string | null;
 }
 
@@ -84,44 +80,15 @@ interface PhotoRow extends Record<string, unknown> {
   upload_status: "pending" | "uploaded";
 }
 
-interface OAuthTransactionRow extends Record<string, unknown> {
-  state_hash: string;
-  pkce_verifier: string;
-  nonce: string;
-  expires_at: number;
-  used_at: number | null;
-}
-
-interface OAuthConfig {
-  clientId: string;
-  clientSecret: string;
-  redirectUri: string;
-  postLoginUri: string;
-}
-
-interface GoogleIdTokenClaims {
-  sub: string;
-  email: string;
-  name: string | null;
-}
-
-export interface OAuthDependencies {
-  /** Injectable only to make the external Google calls testable. */
-  fetch?: typeof fetch;
-}
-
 const sessionCookieName = "home_measure_session";
-const oauthStateBytes = 32;
-const oauthVerifierBytes = 64;
-const oauthTransactionLifetimeMs = 10 * 60 * 1000;
+const sessionTokenBytes = 32;
+/** OWASP's floor for PBKDF2-HMAC-SHA256, within the Worker CPU budget for one sign-in. */
+const passwordHashIterations = 210_000;
 const sessionLifetimeSeconds = 30 * 24 * 60 * 60;
-const googleAuthorizationEndpoint = "https://accounts.google.com/o/oauth2/v2/auth";
-const googleTokenEndpoint = "https://oauth2.googleapis.com/token";
-const googleJwksEndpoint = "https://www.googleapis.com/oauth2/v3/certs";
 const maxPhotoUploadBytes = 12 * 1024 * 1024;
 const allowedPhotoMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 
-function jsonError(status: number, code: "invalid_request" | "unauthorized" | "not_found" | "conflict" | "internal_error" | "auth_unavailable" | "oauth_failed"): Response {
+function jsonError(status: number, code: "invalid_request" | "unauthorized" | "not_found" | "conflict" | "internal_error" ): Response {
   return Response.json({ error: code }, { status });
 }
 
@@ -171,39 +138,11 @@ function randomToken(byteLength: number): string {
   return base64UrlEncode(bytes);
 }
 
-async function sha256Base64Url(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return base64UrlEncode(new Uint8Array(digest));
-}
-
 function constantTimeEqual(left: string, right: string): boolean {
   if (left.length !== right.length) return false;
   let difference = 0;
   for (let index = 0; index < left.length; index += 1) difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
   return difference === 0;
-}
-
-function oauthConfig(env: Env): OAuthConfig | null {
-  const clientId = env.GOOGLE_CLIENT_ID?.trim();
-  const clientSecret = env.GOOGLE_CLIENT_SECRET;
-  const redirectUri = env.OAUTH_REDIRECT_URI?.trim();
-  if (!clientId || clientId.length > 512 || !clientSecret || clientSecret.length > 1024 || !redirectUri || redirectUri.length > 2048) return null;
-  try {
-    const callback = new URL(redirectUri);
-    const isLocalHttp = callback.protocol === "http:" && (callback.hostname === "localhost" || callback.hostname === "127.0.0.1");
-    if ((!isLocalHttp && callback.protocol !== "https:") || callback.username || callback.password
-      || callback.pathname !== "/api/auth/google/callback" || callback.search || callback.hash) return null;
-    return { clientId, clientSecret, redirectUri: callback.toString(), postLoginUri: new URL("/", callback).toString() };
-  } catch {
-    return null;
-  }
-}
-
-function noStoreRedirect(location: string, status: 302 | 303 = 302): Response {
-  return new Response(null, {
-    status,
-    headers: { Location: location, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" },
-  });
 }
 
 function sessionCookie(sessionId: string, maxAge: number): string {
@@ -214,183 +153,79 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function decodeJsonSegment(value: string, maxLength: number): Record<string, unknown> | null {
-  if (value.length > maxLength) return null;
-  const bytes = base64UrlDecode(value);
-  if (!bytes) return null;
-  try {
-    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    const parsed: unknown = JSON.parse(decoded);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function validGoogleAudience(value: unknown, clientId: string, authorizedParty: unknown): boolean {
-  if (typeof value === "string") return value === clientId;
-  if (!Array.isArray(value) || value.length === 0 || value.length > 10 || !value.every((entry) => typeof entry === "string")) return false;
-  return value.includes(clientId) && typeof authorizedParty === "string" && authorizedParty === clientId;
-}
-
-function numericClaim(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
-}
-
-async function verifyGoogleIdToken(idToken: string, config: OAuthConfig, nonce: string, requestFetch: typeof fetch): Promise<GoogleIdTokenClaims | null> {
-  const parts = idToken.split(".");
-  if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2] || idToken.length > 12_000) return null;
-  const header = decodeJsonSegment(parts[0], 2_048);
-  const claims = decodeJsonSegment(parts[1], 8_192);
-  const signature = base64UrlDecode(parts[2]);
-  if (!header || !claims || !signature || header.alg !== "RS256" || typeof header.kid !== "string" || header.kid.length === 0 || header.kid.length > 128) return null;
-
-  let jwksResponse: Response;
-  try {
-    jwksResponse = await requestFetch(googleJwksEndpoint, { headers: { accept: "application/json" } });
-  } catch {
-    return null;
-  }
-  if (!jwksResponse.ok) return null;
-  let jwks: unknown;
-  try {
-    jwks = await jwksResponse.json();
-  } catch {
-    return null;
-  }
-  if (!isRecord(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length === 0 || jwks.keys.length > 20) return null;
-  const matchingKey = jwks.keys.find((key): key is Record<string, unknown> => isRecord(key) && key.kid === header.kid);
-  if (!matchingKey || matchingKey.kty !== "RSA" || typeof matchingKey.n !== "string" || typeof matchingKey.e !== "string"
-    || (matchingKey.alg !== undefined && matchingKey.alg !== "RS256") || (matchingKey.use !== undefined && matchingKey.use !== "sig")) return null;
-  if (matchingKey.key_ops !== undefined && (!Array.isArray(matchingKey.key_ops) || !matchingKey.key_ops.includes("verify"))) return null;
-
-  let signatureValid: boolean;
-  try {
-    const key = await crypto.subtle.importKey("jwk", matchingKey as JsonWebKey, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
-    signatureValid = await crypto.subtle.verify(
-      "RSASSA-PKCS1-v1_5",
-      key,
-      arrayBufferCopy(signature),
-      new TextEncoder().encode(`${parts[0]}.${parts[1]}`),
-    );
-  } catch {
-    return null;
-  }
-  if (!signatureValid) return null;
-
-  const issuedAt = numericClaim(claims.iat);
-  const expiresAt = numericClaim(claims.exp);
-  const notBefore = claims.nbf === undefined ? null : numericClaim(claims.nbf);
-  const currentSeconds = Math.floor(now() / 1_000);
-  if (issuedAt === null || expiresAt === null || (notBefore === null && claims.nbf !== undefined)
-    || expiresAt <= currentSeconds || issuedAt > currentSeconds + 300 || expiresAt <= issuedAt || expiresAt - issuedAt > 7_200
-    || (notBefore !== null && notBefore > currentSeconds + 60)) return null;
-  if ((claims.iss !== "https://accounts.google.com" && claims.iss !== "accounts.google.com")
-    || !validGoogleAudience(claims.aud, config.clientId, claims.azp) || typeof claims.nonce !== "string" || !constantTimeEqual(claims.nonce, nonce)
-    || typeof claims.sub !== "string" || claims.sub.length === 0 || claims.sub.length > 255
-    || !zEmail.safeParse(claims.email).success || claims.email_verified !== true) return null;
-  return { sub: claims.sub, email: claims.email as string, name: typeof claims.name === "string" && claims.name.length <= 200 ? claims.name : null };
-}
-
-const zEmail = {
-  safeParse(value: unknown): { success: true; data: string } | { success: false } {
-    if (typeof value !== "string" || value.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
-      return { success: false };
-    }
-    return { success: true, data: value };
-  },
-};
-
 function developmentUser(env: Env): AuthUser | null {
   if (env.ENVIRONMENT !== "development") return null;
   const userId = clientIdSchema.safeParse(env.DEV_AUTH_USER_ID);
-  const email = zEmail.safeParse(env.DEV_AUTH_EMAIL);
-  if (!userId.success || !email.success) return null;
-  return { id: userId.data, email: email.data, name: env.DEV_AUTH_NAME?.trim() || null };
+  const username = usernameSchema.safeParse(env.DEV_AUTH_USERNAME);
+  if (!userId.success || !username.success) return null;
+  return { id: userId.data, username: username.data, name: env.DEV_AUTH_NAME?.trim() || null };
 }
 
-async function createOAuthTransaction(db: D1Database): Promise<{ state: string; verifier: string; nonce: string }> {
-  const state = randomToken(oauthStateBytes);
-  const verifier = randomToken(oauthVerifierBytes);
-  const nonce = randomToken(oauthStateBytes);
-  const timestamp = now();
-  const stateHash = await sha256Base64Url(state);
-  await db.prepare("DELETE FROM oauth_transactions WHERE expires_at <= ?").bind(timestamp).run();
-  await db.prepare(
-    `INSERT INTO oauth_transactions (state_hash, pkce_verifier, nonce, expires_at, used_at, created_at)
-     VALUES (?, ?, ?, ?, NULL, ?)`,
-  ).bind(stateHash, verifier, nonce, timestamp + oauthTransactionLifetimeMs, timestamp).run();
-  return { state, verifier, nonce };
+/**
+ * PBKDF2-HMAC-SHA256 through WebCrypto, which the Workers runtime provides natively, so signing in
+ * needs nothing outside this app. The iteration count travels with the hash: raising it later keeps
+ * older records verifiable.
+ */
+async function derivePasswordHash(password: string, salt: Uint8Array, iterations: number): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt: arrayBufferCopy(salt), iterations },
+    key,
+    256,
+  );
+  return base64UrlEncode(new Uint8Array(bits));
 }
 
-async function claimOAuthTransaction(db: D1Database, state: string): Promise<OAuthTransactionRow | null> {
-  if (!/^[A-Za-z0-9_-]{43}$/u.test(state)) return null;
-  const stateHash = await sha256Base64Url(state);
-  const transaction = await db.prepare(
-    `SELECT state_hash, pkce_verifier, nonce, expires_at, used_at
-     FROM oauth_transactions WHERE state_hash = ?`,
-  ).bind(stateHash).first<OAuthTransactionRow>();
-  if (!transaction || transaction.used_at !== null || transaction.expires_at <= now() || !constantTimeEqual(transaction.state_hash, stateHash)) return null;
-  const claimResult = await db.prepare(
-    `UPDATE oauth_transactions SET used_at = ?
-     WHERE state_hash = ? AND expires_at > ? AND used_at IS NULL`,
-  ).bind(now(), stateHash, now()).run();
-  return claimResult.meta.changes === 1 ? transaction : null;
+async function hashPassword(password: string): Promise<string> {
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
+  const digest = await derivePasswordHash(password, salt, passwordHashIterations);
+  return `pbkdf2-sha256$${passwordHashIterations}$${base64UrlEncode(salt)}$${digest}`;
 }
 
-async function exchangeAuthorizationCode(
-  code: string,
-  transaction: OAuthTransactionRow,
-  config: OAuthConfig,
-  requestFetch: typeof fetch,
-): Promise<string | null> {
-  let response: Response;
+async function passwordMatches(password: string, stored: string): Promise<boolean> {
+  const [scheme, iterations, salt, digest] = stored.split("$");
+  if (scheme !== "pbkdf2-sha256" || !iterations || !salt || !digest) return false;
+  const rounds = Number(iterations);
+  const saltBytes = base64UrlDecode(salt);
+  if (!Number.isSafeInteger(rounds) || rounds < 1_000 || rounds > 1_000_000 || !saltBytes) return false;
+  return constantTimeEqual(await derivePasswordHash(password, saltBytes, rounds), digest);
+}
+
+async function createPasswordUser(db: D1Database, username: string, password: string): Promise<AuthUser | null> {
+  const id = randomToken(sessionTokenBytes);
+  const passwordHash = await hashPassword(password);
   try {
-    response = await requestFetch(googleTokenEndpoint, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-      body: new URLSearchParams({
-        code,
-        client_id: config.clientId,
-        client_secret: config.clientSecret,
-        redirect_uri: config.redirectUri,
-        code_verifier: transaction.pkce_verifier,
-        grant_type: "authorization_code",
-      }),
-    });
+    const result = await db.prepare(
+      "INSERT OR IGNORE INTO users (id, username, password_hash, name, created_at) VALUES (?, ?, ?, NULL, ?)",
+    ).bind(id, username, passwordHash, now()).run();
+    // The unique index turns a taken username into zero changes rather than an exception.
+    if (result.meta.changes !== 1) return null;
   } catch {
     return null;
   }
-  if (!response.ok) return null;
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    return null;
-  }
-  return isRecord(payload) && typeof payload.id_token === "string" && payload.id_token.length > 0 && payload.id_token.length <= 12_000
-    ? payload.id_token
-    : null;
+  return { id, username, name: null };
 }
 
-async function upsertGoogleUser(db: D1Database, claims: GoogleIdTokenClaims): Promise<AuthUser | null> {
-  const userId = randomToken(oauthStateBytes);
-  try {
-    await db.prepare(
-      `INSERT INTO users (id, email, name, provider, provider_user_id, created_at)
-       VALUES (?, ?, ?, 'google', ?, ?)
-       ON CONFLICT(provider, provider_user_id) DO UPDATE SET email = excluded.email, name = excluded.name`,
-    ).bind(userId, claims.email, claims.name, claims.sub, now()).run();
-    return await db.prepare(
-      "SELECT id, email, name FROM users WHERE provider = 'google' AND provider_user_id = ?",
-    ).bind(claims.sub).first<AuthUser>();
-  } catch {
-    return null;
-  }
+async function verifyPassword(db: D1Database, username: string, password: string): Promise<AuthUser | null> {
+  const row = await db.prepare(
+    "SELECT id, username, name, password_hash FROM users WHERE username = ?",
+  ).bind(username).first<AuthUser & { password_hash: string }>();
+  // Hash even when the name is unknown, so a missing account and a wrong password cost the same.
+  const stored = row?.password_hash ?? `pbkdf2-sha256$${passwordHashIterations}$${base64UrlEncode(new Uint8Array(16))}$${"-".repeat(43)}`;
+  const matched = await passwordMatches(password, stored);
+  return row && matched ? { id: row.id, username: row.username, name: row.name } : null;
+}
+
+function signedInResponse(user: AuthUser, sessionId: string): Response {
+  return Response.json({ user }, {
+    status: 200,
+    headers: { "Set-Cookie": sessionCookie(sessionId, sessionLifetimeSeconds), "Cache-Control": "no-store" },
+  });
 }
 
 async function createSession(db: D1Database, userId: string): Promise<string | null> {
-  const sessionId = randomToken(oauthStateBytes);
+  const sessionId = randomToken(sessionTokenBytes);
   const timestamp = now();
   try {
     await db.prepare(
@@ -406,9 +241,9 @@ const authenticate: MiddlewareHandler<AppEnv> = async (context, next) => {
   const devUser = developmentUser(context.env);
   if (devUser) {
     await context.env.DB.prepare(
-      `INSERT OR IGNORE INTO users (id, email, name, provider, provider_user_id, created_at)
-       VALUES (?, ?, ?, 'development', ?, ?)`,
-    ).bind(devUser.id, devUser.email, devUser.name, devUser.id, now()).run();
+      // A development identity never signs in, so it stores a hash nothing can match.
+      "INSERT OR IGNORE INTO users (id, username, password_hash, name, created_at) VALUES (?, ?, '', ?, ?)",
+    ).bind(devUser.id, devUser.username, devUser.name, now()).run();
     context.set("authUser", devUser);
     await next();
     return;
@@ -416,7 +251,7 @@ const authenticate: MiddlewareHandler<AppEnv> = async (context, next) => {
   const sessionId = getSessionId(context.req.raw);
   if (!sessionId) return jsonError(401, "unauthorized");
   const user = await context.env.DB.prepare(
-    `SELECT users.id, users.email, users.name
+    `SELECT users.id, users.username, users.name
      FROM sessions INNER JOIN users ON users.id = sessions.user_id
      WHERE sessions.id = ? AND sessions.expires_at > ?`,
   ).bind(sessionId, now()).first<AuthUser>();
@@ -589,51 +424,29 @@ function asRoom(row: RoomRow): Record<string, unknown> {
   };
 }
 
-export function createApp(dependencies: OAuthDependencies = {}): Hono<AppEnv> {
+export function createApp(): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
-  const requestFetch = dependencies.fetch ?? globalThis.fetch;
   app.onError(() => jsonError(500, "internal_error"));
   app.get("/api/health", (context) => context.json({ status: "ok" }));
 
-  app.get("/api/auth/google", async (context) => {
-    const config = oauthConfig(context.env);
-    if (!config) return jsonError(503, "auth_unavailable");
-    const transaction = await createOAuthTransaction(context.env.DB);
-    const challenge = await sha256Base64Url(transaction.verifier);
-    const authorizationUrl = new URL(googleAuthorizationEndpoint);
-    authorizationUrl.search = new URLSearchParams({
-      client_id: config.clientId,
-      redirect_uri: config.redirectUri,
-      response_type: "code",
-      scope: "openid email profile",
-      state: transaction.state,
-      nonce: transaction.nonce,
-      code_challenge: challenge,
-      code_challenge_method: "S256",
-    }).toString();
-    return noStoreRedirect(authorizationUrl.toString());
+  app.post("/api/auth/register", async (context) => {
+    const input = await readJson(context.req.raw, credentialsSchema);
+    if (!input) return jsonError(400, "invalid_request");
+    const user = await createPasswordUser(context.env.DB, input.username, input.password);
+    if (!user) return jsonError(409, "conflict");
+    const sessionId = await createSession(context.env.DB, user.id);
+    if (!sessionId) return jsonError(500, "internal_error");
+    return signedInResponse(user, sessionId);
   });
 
-  app.get("/api/auth/google/callback", async (context) => {
-    const config = oauthConfig(context.env);
-    if (!config) return jsonError(503, "auth_unavailable");
-    const query = new URL(context.req.url).searchParams;
-    const states = query.getAll("state");
-    const codes = query.getAll("code");
-    if (states.length !== 1 || codes.length !== 1 || !states[0] || !codes[0] || codes[0].length > 2_048) return jsonError(400, "oauth_failed");
-    const transaction = await claimOAuthTransaction(context.env.DB, states[0]);
-    if (!transaction) return jsonError(400, "oauth_failed");
-    const idToken = await exchangeAuthorizationCode(codes[0], transaction, config, requestFetch);
-    if (!idToken) return jsonError(400, "oauth_failed");
-    const claims = await verifyGoogleIdToken(idToken, config, transaction.nonce, requestFetch);
-    if (!claims) return jsonError(400, "oauth_failed");
-    const user = await upsertGoogleUser(context.env.DB, claims);
-    if (!user) return jsonError(400, "oauth_failed");
+  app.post("/api/auth/login", async (context) => {
+    const input = await readJson(context.req.raw, credentialsSchema);
+    if (!input) return jsonError(400, "invalid_request");
+    const user = await verifyPassword(context.env.DB, input.username, input.password);
+    if (!user) return jsonError(401, "unauthorized");
     const sessionId = await createSession(context.env.DB, user.id);
-    if (!sessionId) return jsonError(400, "oauth_failed");
-    const response = noStoreRedirect(config.postLoginUri, 303);
-    response.headers.set("Set-Cookie", sessionCookie(sessionId, sessionLifetimeSeconds));
-    return response;
+    if (!sessionId) return jsonError(500, "internal_error");
+    return signedInResponse(user, sessionId);
   });
 
   app.post("/api/auth/logout", async (context) => {

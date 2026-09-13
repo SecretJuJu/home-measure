@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   clientIdSchema,
   clientMutationIdSchema,
+  credentialsSchema,
   layoutVersion,
   roomLayoutSchema,
   roomWallLengths,
@@ -27,6 +28,23 @@ const validLayout = {
 describe("shared domain schemas", () => {
   it("accepts a versioned rectangular layout with stable element IDs", () => {
     expect(roomLayoutSchema.parse(validLayout)).toEqual(validLayout);
+  });
+
+  it("normalises a username and holds the line on password length", () => {
+    // #given
+    const mixedCase = { username: "  Field.Owner  ", password: "measure-tape-2026" };
+
+    // #when
+    const parsed = credentialsSchema.parse(mixedCase);
+    const rejected = [
+      credentialsSchema.safeParse({ username: "ab", password: "measure-tape-2026" }),
+      credentialsSchema.safeParse({ username: "no spaces", password: "measure-tape-2026" }),
+      credentialsSchema.safeParse({ username: "field.owner", password: "short" }),
+    ];
+
+    // #then
+    expect(parsed).toEqual({ username: "field.owner", password: "measure-tape-2026" });
+    expect(rejected.map((result) => result.success)).toEqual([false, false, false]);
   });
 
   it("accepts a corner notch and measures the walls it shortens and creates", () => {
