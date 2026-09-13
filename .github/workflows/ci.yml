@@ -56,15 +56,18 @@ jobs:
           test -n "$D1_DATABASE_ID"
           test "$D1_DATABASE_ID" != "REPLACE_WITH_D1_DATABASE_ID"
           sed -i "s/REPLACE_WITH_D1_DATABASE_ID/$D1_DATABASE_ID/" infra/worker/wrangler.jsonc
+      # Run from the Worker package: wrangler is a dependency there, not at the workspace root.
       - name: Apply pending D1 migrations
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: d1 migrations apply home-measure --remote --config infra/worker/wrangler.jsonc
+          workingDirectory: infra/worker
+          command: d1 migrations apply home-measure --remote --config wrangler.jsonc
       - name: Deploy Worker and static assets
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --config infra/worker/wrangler.jsonc
+          workingDirectory: infra/worker
+          command: deploy --config wrangler.jsonc
