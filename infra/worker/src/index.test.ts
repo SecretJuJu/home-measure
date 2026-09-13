@@ -351,7 +351,7 @@ describe("username and password accounts", () => {
     expect(registered.status).toBe(200);
     expect(await registered.json()).toEqual({ user: { id: expect.any(String), username: "field.owner", name: null } });
     expect(setCookie).toMatch(/^home_measure_session=[A-Za-z0-9_-]{43}; HttpOnly; Secure; SameSite=Lax; Path=\/; Max-Age=2592000$/);
-    expect(db.storedPasswordHash("field.owner")).toMatch(/^pbkdf2-sha256\$210000\$[A-Za-z0-9_-]+\$[A-Za-z0-9_-]{43}$/);
+    expect(db.storedPasswordHash("field.owner")).toMatch(/^pbkdf2-sha256\$100000\$[A-Za-z0-9_-]+\$[A-Za-z0-9_-]{43}$/);
     expect(db.storedPasswordHash("field.owner")).not.toContain(credentials.password);
 
     const cookie = setCookie!.split(";", 1)[0]!;

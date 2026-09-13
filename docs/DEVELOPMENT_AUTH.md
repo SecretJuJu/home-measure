@@ -11,7 +11,7 @@ PBKDF2 hash in its own D1 table. Domain routes require either a valid, unexpired
 
 - A username is 3–32 characters of letters, digits, `.`, `_` or `-`, compared case-insensitively.
 - A password is at least 10 characters, capped at 200, and is never stored or logged in the clear.
-- Registration hashes with PBKDF2-HMAC-SHA256, 210,000 iterations, and a fresh 128-bit salt. The
+- Registration hashes with PBKDF2-HMAC-SHA256 at 100,000 iterations (the most the Workers runtime allows) and a fresh 128-bit salt. The
   record is `pbkdf2-sha256$<iterations>$<salt>$<hash>`, so the cost can be raised later without
   invalidating existing passwords.
 - A taken username answers `409 {"error":"conflict"}`. A wrong password and an unknown username both

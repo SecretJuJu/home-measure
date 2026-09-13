@@ -82,8 +82,11 @@ interface PhotoRow extends Record<string, unknown> {
 
 const sessionCookieName = "home_measure_session";
 const sessionTokenBytes = 32;
-/** OWASP's floor for PBKDF2-HMAC-SHA256, within the Worker CPU budget for one sign-in. */
-const passwordHashIterations = 210_000;
+/**
+ * The Workers runtime refuses PBKDF2 above 100,000 iterations, so that ceiling is the cost we can
+ * charge per sign-in. The count is stored with each hash, so raising it stays possible later.
+ */
+const passwordHashIterations = 100_000;
 const sessionLifetimeSeconds = 30 * 24 * 60 * 60;
 const maxPhotoUploadBytes = 12 * 1024 * 1024;
 const allowedPhotoMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -426,7 +429,11 @@ function asRoom(row: RoomRow): Record<string, unknown> {
 
 export function createApp(): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
-  app.onError(() => jsonError(500, "internal_error"));
+  app.onError((error) => {
+    // Clients still learn nothing, but the message reaches `wrangler tail` instead of vanishing.
+    console.error("unhandled request error:", error instanceof Error ? error.message : String(error));
+    return jsonError(500, "internal_error");
+  });
   app.get("/api/health", (context) => context.json({ status: "ok" }));
 
   app.post("/api/auth/register", async (context) => {
