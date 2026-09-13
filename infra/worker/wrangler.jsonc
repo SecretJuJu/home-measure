@@ -4,6 +4,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-10",
   "assets": {
+    // The Worker falls back to env.ASSETS for non-API 404s, so the binding has to exist.
+    "binding": "ASSETS",
     "directory": "../../apps/web/dist",
     "not_found_handling": "single-page-application"
   },
