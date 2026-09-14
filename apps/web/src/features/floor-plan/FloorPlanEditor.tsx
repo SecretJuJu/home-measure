@@ -752,7 +752,7 @@ export function FloorPlanEditor({
   function draggedRoom(state: DragState): { layout: RoomLayout; guides: SnapGuide[] } {
     const moved = moveRoom(state.layout, { x: state.current.x - state.start.x, y: state.current.y - state.start.y });
     if (!snapEnabled) return { layout: moved, guides: [] };
-    const snapped = snapRoomPosition(roomRect(moved), otherRoomRects(state.roomId), snapTolerance(viewportRef.current));
+    const snapped = snapRoomPosition(moved, otherRoomLayouts(state.roomId), snapTolerance(viewportRef.current));
     return { layout: { ...moved, position: snapped.position }, guides: snapped.guides };
   }
 
@@ -763,7 +763,7 @@ export function FloorPlanEditor({
       roomRect(room.layout),
       state.target.corner,
       state.current,
-      snapEnabled ? otherRoomRects(room.id) : [],
+      snapEnabled ? otherRoomLayouts(room.id) : [],
       snapTolerance(viewportRef.current),
     );
     const moved = { ...room.layout, position: { x: rect.x, y: rect.y } };
@@ -784,8 +784,8 @@ export function FloorPlanEditor({
     });
   }
 
-  function otherRoomRects(excludedId: ClientId) {
-    return rooms.filter((room) => room.id !== excludedId).map((room) => roomRect(room.layout));
+  function otherRoomLayouts(excludedId: ClientId) {
+    return rooms.filter((room) => room.id !== excludedId).map((room) => room.layout);
   }
 
   function handleObjectPointerDown(

@@ -61,6 +61,14 @@ export interface SnapGuide {
   to: number;
 }
 
+/** A straight run of wall, with the extent it covers along its own direction. */
+export interface SnapLine {
+  axis: "x" | "y";
+  position: number;
+  from: number;
+  to: number;
+}
+
 export interface RoomSnap {
   position: Point;
   guides: SnapGuide[];
@@ -624,16 +632,40 @@ export function planGridStep(viewport: SvgViewport, maxLines = 16): number {
 }
 
 /** Pulls a dragged room onto the edges and centres of the other rooms, like a design tool. */
-export function snapRoomPosition(rect: Rect, others: readonly Rect[], tolerance: number): RoomSnap {
-  const horizontal = axisSnap(rect, others, tolerance, "x");
-  const vertical = axisSnap(rect, others, tolerance, "y");
+/**
+ * Every straight run of wall in the room, as a line that can meet another room's wall. An L-shaped
+ * room contributes its two inner walls as well, which is what the bounding rectangle used to hide:
+ * the corner it cut away is empty space, and snapping to a line there never lined anything up.
+ */
+export function roomSnapLines(layout: RoomLayout): SnapLine[] {
+  const points = roomOutline(layout);
+  const lines: SnapLine[] = [];
+  for (let index = 0; index < points.length; index += 1) {
+    const from = points[index]!;
+    const to = points[(index + 1) % points.length]!;
+    if (from.x === to.x) lines.push({ axis: "x", position: from.x, from: Math.min(from.y, to.y), to: Math.max(from.y, to.y) });
+    else if (from.y === to.y) lines.push({ axis: "y", position: from.y, from: Math.min(from.x, to.x), to: Math.max(from.x, to.x) });
+  }
+  // Centre lines help line a room up with a corridor or another room across a gap.
+  const rect = roomRect(layout);
+  lines.push({ axis: "x", position: rect.x + rect.width / 2, from: rect.y, to: rect.y + rect.height });
+  lines.push({ axis: "y", position: rect.y + rect.height / 2, from: rect.x, to: rect.x + rect.width });
+  return lines;
+}
+
+/** Pulls a dragged room onto the walls of the rooms it is actually beside. */
+export function snapRoomPosition(moved: RoomLayout, others: readonly RoomLayout[], tolerance: number): RoomSnap {
+  const lines = roomSnapLines(moved);
+  const targets = others.flatMap(roomSnapLines);
+  const horizontal = bestSnap(lines, targets, "x", tolerance);
+  const vertical = bestSnap(lines, targets, "y", tolerance);
   const guides: SnapGuide[] = [];
-  if (horizontal.guide) guides.push(horizontal.guide);
-  if (vertical.guide) guides.push(vertical.guide);
+  if (horizontal?.guide) guides.push(horizontal.guide);
+  if (vertical?.guide) guides.push(vertical.guide);
   return {
     position: {
-      x: Math.max(0, Math.round(rect.x + horizontal.delta)),
-      y: Math.max(0, Math.round(rect.y + vertical.delta)),
+      x: Math.max(0, Math.round(moved.position.x + (horizontal?.delta ?? 0))),
+      y: Math.max(0, Math.round(moved.position.y + (vertical?.delta ?? 0))),
     },
     guides,
   };
@@ -660,14 +692,16 @@ export function resizeRoomCorner(
   rect: Rect,
   corner: RoomCorner,
   point: Point,
-  others: readonly Rect[],
+  others: readonly RoomLayout[],
   tolerance: number,
 ): RoomResize {
   const west = corner === "northWest" || corner === "southWest";
   const north = corner === "northWest" || corner === "northEast";
   const anchor = { x: west ? rect.x + rect.width : rect.x, y: north ? rect.y + rect.height : rect.y };
-  const horizontal = edgeSnap(point.x, others.flatMap((other) => [other.x, other.x + other.width]), tolerance);
-  const vertical = edgeSnap(point.y, others.flatMap((other) => [other.y, other.y + other.height]), tolerance);
+  const targets = others.flatMap(roomSnapLines);
+  // The dragged edge only meets a wall that runs alongside it, so carry its own extent into the test.
+  const horizontal = edgeSnap(point.x, targets, "x", { from: Math.min(point.y, anchor.y), to: Math.max(point.y, anchor.y) }, tolerance);
+  const vertical = edgeSnap(point.y, targets, "y", { from: Math.min(point.x, anchor.x), to: Math.max(point.x, anchor.x) }, tolerance);
   const x = clamp(horizontal.value, west ? 0 : anchor.x + minimumRoomSize, west ? anchor.x - minimumRoomSize : Number.MAX_SAFE_INTEGER);
   const y = clamp(vertical.value, north ? 0 : anchor.y + minimumRoomSize, north ? anchor.y - minimumRoomSize : Number.MAX_SAFE_INTEGER);
   const resized: Rect = {
@@ -729,48 +763,57 @@ export function utilityLabel(utility: Pick<UtilityElement, "type">): string {
   return labels[utility.type];
 }
 
-function axisSnap(
-  rect: Rect,
-  others: readonly Rect[],
-  tolerance: number,
+/**
+ * The closest pair of parallel walls within reach that overlap along their own direction. Without
+ * the overlap test a wall would snap to one on the far side of the plan that it never meets.
+ */
+function bestSnap(
+  lines: readonly SnapLine[],
+  targets: readonly SnapLine[],
   axis: "x" | "y",
-): { delta: number; guide: SnapGuide | null } {
-  const start = axis === "x" ? rect.x : rect.y;
-  const size = axis === "x" ? rect.width : rect.height;
-  const anchors = [start, start + size / 2, start + size];
-  let closest: { delta: number; position: number; other: Rect } | null = null;
-  for (const other of others) {
-    const otherStart = axis === "x" ? other.x : other.y;
-    const otherSize = axis === "x" ? other.width : other.height;
-    for (const target of [otherStart, otherStart + otherSize / 2, otherStart + otherSize]) {
-      for (const anchor of anchors) {
-        const delta = target - anchor;
-        if (Math.abs(delta) > tolerance) continue;
-        if (!closest || Math.abs(delta) < Math.abs(closest.delta)) closest = { delta, position: target, other };
-      }
+  tolerance: number,
+): { delta: number; guide: SnapGuide } | null {
+  let closest: { delta: number; overlap: number; line: SnapLine; target: SnapLine } | null = null;
+  for (const line of lines) {
+    if (line.axis !== axis) continue;
+    for (const target of targets) {
+      if (target.axis !== axis) continue;
+      const delta = target.position - line.position;
+      if (Math.abs(delta) > tolerance) continue;
+      const overlap = Math.min(line.to, target.to) - Math.max(line.from, target.from);
+      if (overlap <= 0) continue;
+      // Equally close walls are broken by how much they run together: the longer shared run is the
+      // pairing the user means, not whichever happened to come first.
+      const nearer = !closest || Math.abs(delta) < Math.abs(closest.delta)
+        || (Math.abs(delta) === Math.abs(closest.delta) && overlap > closest.overlap);
+      if (nearer) closest = { delta, overlap, line, target };
     }
   }
-  if (!closest) return { delta: 0, guide: null };
-  const crossStart = axis === "x" ? rect.y : rect.x;
-  const crossSize = axis === "x" ? rect.height : rect.width;
-  const otherCrossStart = axis === "x" ? closest.other.y : closest.other.x;
-  const otherCrossSize = axis === "x" ? closest.other.height : closest.other.width;
+  if (!closest) return null;
   return {
     delta: closest.delta,
     guide: {
       axis,
-      position: Math.round(closest.position),
-      from: Math.round(Math.min(crossStart, otherCrossStart)),
-      to: Math.round(Math.max(crossStart + crossSize, otherCrossStart + otherCrossSize)),
+      position: Math.round(closest.target.position),
+      from: Math.round(Math.min(closest.line.from, closest.target.from)),
+      to: Math.round(Math.max(closest.line.to, closest.target.to)),
     },
   };
 }
 
-function edgeSnap(value: number, candidates: readonly number[], tolerance: number): { value: number; matched: boolean } {
+function edgeSnap(
+  value: number,
+  targets: readonly SnapLine[],
+  axis: "x" | "y",
+  extent: { from: number; to: number },
+  tolerance: number,
+): { value: number; matched: boolean } {
   let closest: number | null = null;
-  for (const candidate of candidates) {
-    if (Math.abs(candidate - value) > tolerance) continue;
-    if (closest === null || Math.abs(candidate - value) < Math.abs(closest - value)) closest = candidate;
+  for (const target of targets) {
+    if (target.axis !== axis) continue;
+    if (Math.abs(target.position - value) > tolerance) continue;
+    if (Math.min(extent.to, target.to) - Math.max(extent.from, target.from) <= 0) continue;
+    if (closest === null || Math.abs(target.position - value) < Math.abs(closest - value)) closest = target.position;
   }
   return closest === null ? { value, matched: false } : { value: closest, matched: true };
 }

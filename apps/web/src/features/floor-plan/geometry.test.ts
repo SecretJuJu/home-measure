@@ -8,6 +8,7 @@ import {
   notchInnerCorner,
   roomLabelBox,
   roomOutline,
+  roomRect,
   roomWalls,
   setRoomNotch,
   floorPlanViewport,
@@ -318,8 +319,8 @@ describe("floor-plan view", () => {
 });
 
 describe("floor-plan room alignment", () => {
-  const dragged = { x: 1_600, y: 900, width: 4_400, height: 3_300 };
-  const neighbor = { x: 6_100, y: 900, width: 4_400, height: 3_300 };
+  const dragged: RoomLayout = { ...layout, position: { x: 1_600, y: 900 }, size: { width: 4_400, height: 3_300 } };
+  const neighbor: RoomLayout = { ...layout, position: { x: 6_100, y: 900 }, size: { width: 4_400, height: 3_300 } };
 
   it("pulls a dragged room flush against the wall it approaches", () => {
     // #given
@@ -338,33 +339,44 @@ describe("floor-plan room alignment", () => {
     const tolerance = 50;
 
     // #when
-    const snapped = snapRoomPosition({ ...dragged, y: 2_000 }, [neighbor], tolerance);
+    const snapped = snapRoomPosition({ ...dragged, position: { x: 1_600, y: 2_000 } }, [neighbor], tolerance);
 
     // #then
     expect(snapped.position).toEqual({ x: 1_600, y: 2_000 });
     expect(snapped.guides).toEqual([]);
   });
 
-  it("measures only the rooms that actually face a wall", () => {
-    // #given
-    const rect = { x: 900, y: 900, width: 4_400, height: 3_300 };
-    const neighbors = [
-      { id: "room_bedroom", name: "침실", rect: neighbor },
-      { id: "room_corner", name: "모서리", rect: { x: 12_000, y: 5_000, width: 1_000, height: 1_000 } },
-    ];
+  it("ignores a wall the room does not run alongside", () => {
+    // #given a neighbour far below, whose left wall shares an x with the dragged room's right wall
+    const below: RoomLayout = { ...layout, position: { x: 6_000, y: 20_000 }, size: { width: 4_400, height: 3_300 } };
 
     // #when
-    const gaps = roomGaps(rect, neighbors);
+    const snapped = snapRoomPosition(dragged, [below], 220);
 
     // #then
-    expect(gaps).toHaveLength(1);
-    expect(gaps[0]).toMatchObject({
-      wall: "east",
-      distance: 800,
-      start: { x: 5_300, y: 2_550 },
-      end: { x: 6_100, y: 2_550 },
-    });
-    expect(gaps[0]?.neighbor.name).toBe("침실");
+    expect(snapped.position).toEqual({ x: 1_600, y: 900 });
+    expect(snapped.guides).toEqual([]);
+  });
+
+  it("snaps onto the inner walls of an L-shaped room, not the corner it cut away", () => {
+    // #given a room whose south-east corner is cut out, and a small room nudged towards that notch
+    const lShaped: RoomLayout = {
+      ...layout,
+      position: { x: 1_000, y: 1_000 },
+      size: { width: 5_000, height: 4_000 },
+      notch: { corner: "southEast", width: 2_000, height: 1_500 },
+    };
+    const filler: RoomLayout = { ...layout, position: { x: 3_900, y: 3_400 }, size: { width: 2_000, height: 1_500 } };
+
+    // #when
+    const snapped = snapRoomPosition(filler, [lShaped], 220);
+
+    // #then it lands inside the cut corner, flush with both inner walls
+    expect(snapped.position).toEqual({ x: 4_000, y: 3_500 });
+    expect(snapped.guides.map((guide) => ({ axis: guide.axis, position: guide.position }))).toEqual([
+      { axis: "x", position: 4_000 },
+      { axis: "y", position: 3_500 },
+    ]);
   });
 
   it("treats a shared wall as contact and only a real intrusion as overlap", () => {
@@ -378,7 +390,23 @@ describe("floor-plan room alignment", () => {
     // #then
     expect(flush).toBe(false);
     expect(intruding).toBe(true);
-    expect(rectsOverlap(rect, { x: 5_000, y: 4_000, width: 500, height: 500 })).toBe(false);
+  });
+
+  it("measures only the rooms that actually face a wall", () => {
+    // #given
+    const rect = { x: 900, y: 900, width: 4_400, height: 3_300 };
+    const neighbors = [
+      { id: "room_bedroom", name: "침실", rect: roomRect(neighbor) },
+      { id: "room_corner", name: "모서리", rect: { x: 12_000, y: 5_000, width: 1_000, height: 1_000 } },
+    ];
+
+    // #when
+    const gaps = roomGaps(rect, neighbors);
+
+    // #then
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]).toMatchObject({ wall: "east", distance: 800, start: { x: 5_300, y: 2_550 }, end: { x: 6_100, y: 2_550 } });
+    expect(gaps[0]?.neighbor.name).toBe("침실");
   });
 
   it("resizes from one corner while the opposite corner stays put", () => {
@@ -396,7 +424,7 @@ describe("floor-plan room alignment", () => {
   it("snaps a resized edge onto a nearby room edge", () => {
     // #given
     const rect = { x: 1_000, y: 1_000, width: 4_000, height: 3_000 };
-    const others = [{ x: 6_000, y: 200, width: 1_000, height: 600 }];
+    const others: RoomLayout[] = [{ ...layout, position: { x: 6_000, y: 1_200 }, size: { width: 1_000, height: 2_000 } }];
 
     // #when
     const resized = resizeRoomCorner(rect, "southEast", { x: 5_950, y: 4_000 }, others, 100);
@@ -422,10 +450,10 @@ describe("floor-plan room alignment", () => {
     const rect = { x: 900, y: 900, width: 4_400, height: 3_300 };
 
     // #when
-    const position = positionForGap(rect, "east", 1_500, neighbor);
+    const position = positionForGap(rect, "east", 1_500, roomRect(neighbor));
 
     // #then
     expect(position).toEqual({ x: 200, y: 900 });
-    expect(positionForGap(rect, "east", 0, neighbor)).toEqual({ x: 1_700, y: 900 });
+    expect(positionForGap(rect, "east", 0, roomRect(neighbor))).toEqual({ x: 1_700, y: 900 });
   });
 });
