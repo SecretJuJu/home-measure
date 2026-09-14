@@ -49,9 +49,15 @@ import {
   setRoomNotch,
   snapRoomPosition,
   snapTolerance,
+  snapUtilityToWall,
   targetWall,
   unitsPerPixel,
   utilityLabel,
+  utilityRect,
+  utilitySize,
+  wallElementAtClearance,
+  wallElementClearances,
+  wallNeighbours,
   wallDirection,
   wallElementPoints,
   wallSegment,
@@ -462,6 +468,27 @@ export function FloorPlanEditor({
     void saveRoomLayout(room, layout);
   }
 
+  /** Slides a door or window along its wall until the requested run of wall is left beside it. */
+  function saveElementClearance(room: LocalRoom, element: DoorElement | WindowElement, side: "start" | "end", clearance: number) {
+    const moved = wallElementAtClearance(room.layout, element, side, clearance);
+    const layout = "hinge" in moved
+      ? { ...room.layout, doors: room.layout.doors.map((door) => door.id === moved.id ? moved : door) }
+      : { ...room.layout, windows: room.layout.windows.map((window) => window.id === moved.id ? moved : window) };
+    void saveRoomLayout(room, layout);
+  }
+
+  function saveUtilityPosition(room: LocalRoom, utility: UtilityElement, position: Point) {
+    const utilities = room.layout.utilities.map((item) => item.id === utility.id
+      ? { ...item, position: clampUtilityPosition(room.layout, position) }
+      : item);
+    void saveRoomLayout(room, { ...room.layout, utilities });
+  }
+
+  function saveUtilitySize(room: LocalRoom, utility: UtilityElement, size: { width: number; height: number }) {
+    const utilities = room.layout.utilities.map((item) => item.id === utility.id ? { ...item, size } : item);
+    void saveRoomLayout(room, { ...room.layout, utilities });
+  }
+
   /** Moves the room along one axis until the requested gap to that neighbour is exact. */
   function saveRoomGap(room: LocalRoom, gap: RoomGap, distance: number) {
     const position = positionForGap(roomRect(room.layout), gap.wall, distance, gap.neighbor.rect);
@@ -681,7 +708,7 @@ export function FloorPlanEditor({
       const room = roomById(objectDrag.roomId);
       setObjectDrag(null);
       if (!room) return;
-      const layout = layoutWithDraggedObject(room.layout, objectDrag, point);
+      const layout = layoutWithDraggedObject(room.layout, objectDrag, point, snapEnabled ? snapTolerance(viewportRef.current) : 0);
       void saveRoomLayout(room, layout);
       return;
     }
@@ -756,7 +783,8 @@ export function FloorPlanEditor({
         setError("설비는 선택한 공간 안에 배치하세요.");
         return;
       }
-      const utility: UtilityElement = { id: newId("utility"), type: placement.utility, position: { x: Math.round(point.x), y: Math.round(point.y) } };
+      const placed: UtilityElement = { id: newId("utility"), type: placement.utility, position: { x: Math.round(point.x), y: Math.round(point.y) } };
+      const utility: UtilityElement = { ...placed, position: snapUtilityToWall(room.layout, placed, snapEnabled ? snapTolerance(viewportRef.current) : 0) };
       await saveRoomLayout(room, { ...room.layout, utilities: [...room.layout.utilities, utility] });
       select({ kind: "utility", roomId: room.id, elementId: utility.id });
       setPlacement(null);
@@ -847,9 +875,9 @@ export function FloorPlanEditor({
       <header className="workspace-header" inert={inspectorOpen}>
         <div className="workspace-brand"><span className="brand-mark" aria-hidden="true">⌑</span><strong>HomeMeasure</strong><span className="workspace-context">현장 실측</span></div>
         <div className={`sync-indicator ${!online ? "offline" : state.syncStatus}`} role="status">
-          <span aria-hidden="true">{!online || state.syncStatus === "offline" ? "○" : state.syncStatus === "syncing" ? "↑" : state.syncStatus === "error" ? "!" : "✓"}</span>
-          {!online ? "오프라인" : state.syncStatus === "syncing" ? "동기화 중" : state.syncStatus === "offline" ? "연결 대기" : state.syncStatus === "error" ? "동기화 실패" : state.pendingOperationCount > 0 ? "동기화 대기" : Object.values(state.properties).some((item) => item.dirty) || Object.values(state.rooms).some((item) => item.dirty) || Object.values(state.checklistItems).some((item) => item.dirty) || Object.values(state.measurements).some((item) => item.dirty) ? "저장 중" : "동기화됨"}
-          {state.pendingOperationCount > 0 && <small>{state.pendingOperationCount}건 대기</small>}
+          <span aria-hidden="true">{!online || state.syncStatus === "offline" ? "○" : state.syncStatus === "syncing" ? "↑" : state.syncStatus === "error" ? "!" : state.syncStatus === "signed-out" ? "○" : "✓"}</span>
+          {!online ? "오프라인" : state.syncStatus === "syncing" ? "동기화 중" : state.syncStatus === "offline" ? "연결 대기" : state.syncStatus === "signed-out" ? "기기에 저장됨" : state.syncStatus === "error" ? "동기화 실패" : state.pendingOperationCount > 0 ? "동기화 대기" : Object.values(state.properties).some((item) => item.dirty) || Object.values(state.rooms).some((item) => item.dirty) || Object.values(state.checklistItems).some((item) => item.dirty) || Object.values(state.measurements).some((item) => item.dirty) ? "저장 중" : "동기화됨"}
+          {state.pendingOperationCount > 0 && <small>{state.syncStatus === "signed-out" ? `${state.pendingOperationCount}건 로그인 후 전송` : `${state.pendingOperationCount}건 대기`}</small>}
           {online && state.syncStatus === "error" && <button type="button" className="sync-retry" onClick={() => void repository.flush()} title={state.lastSyncError ?? undefined} aria-label="동기화 다시 시도">다시 시도</button>}
         </div>
         {/* Signing in is what lets the queue reach the server, so flush as soon as it happens. */}
@@ -909,8 +937,8 @@ export function FloorPlanEditor({
           <rect x={viewport.x} y={viewport.y} width={viewport.width} height={viewport.height} className="canvas-grid" />
           {rooms.map((room) => {
             const displayLayout = dragResult && gestureRoomId === room.id ? dragResult.layout : room.layout;
-            const objectDragLayout = objectDrag?.roomId === room.id ? layoutWithDraggedObject(displayLayout, objectDrag, objectDrag.current) : displayLayout;
-            return <RoomDrawing key={room.id} room={room} layout={objectDragLayout} pixel={pixel} selection={selection} placementActive={placement !== null} resizable={selection?.roomId === room.id && placement === null && !drag} onPointerDown={handleRoomPointerDown} onObjectPointerDown={handleObjectPointerDown} onResizePointerDown={handleResizePointerDown} onSelect={select} />;
+            const objectDragLayout = objectDrag?.roomId === room.id ? layoutWithDraggedObject(displayLayout, objectDrag, objectDrag.current, snapEnabled ? snapTolerance(viewport) : 0) : displayLayout;
+            return <RoomDrawing key={room.id} room={room} layout={objectDragLayout} pixel={pixel} selection={selection} placementActive={placement !== null} resizable={selection?.roomId === room.id && placement === null && !drag && !objectDrag} onPointerDown={handleRoomPointerDown} onObjectPointerDown={handleObjectPointerDown} onResizePointerDown={handleResizePointerDown} onSelect={select} />;
           })}
           {visibleGaps.map((gap) => <GapDimension key={`${measuredRoom?.id}-${gap.wall}`} gap={gap} pixel={pixel} />)}
           {dragResult?.guides.map((guide) => <line
@@ -936,7 +964,7 @@ export function FloorPlanEditor({
       <aside ref={inspectorRef} className="inspector-pane" aria-label="선택한 객체 편집" role={inspectorOpen ? "dialog" : undefined} aria-modal={inspectorOpen || undefined}>
         <div className="inspector-mobile-heading"><strong>속성 · 체크리스트</strong><button type="button" onClick={() => { setInspectorOpen(false); inspectorTriggerRef.current?.focus(); }}>닫기</button></div>
         <div className="object-inspector">
-        <Inspector selection={selection} room={selectedRoom} gaps={gaps} onRoomName={saveRoomName} onRoomResize={(room, size) => void saveRoomLayout(room, resizeRoom(room.layout, size))} onRoomGap={saveRoomGap} onRoomNotch={(room, notch) => void saveRoomLayout(room, setRoomNotch(room.layout, notch))} onRoomDelete={deleteRoom} onElementDelete={deleteSelectedElement} onDoorChange={updateDoor} onWindowChange={updateWindow} />
+        <Inspector selection={selection} room={selectedRoom} gaps={gaps} onRoomName={saveRoomName} onRoomResize={(room, size) => void saveRoomLayout(room, resizeRoom(room.layout, size))} onRoomGap={saveRoomGap} onRoomNotch={(room, notch) => void saveRoomLayout(room, setRoomNotch(room.layout, notch))} onElementMove={saveElementClearance} onUtilityMove={saveUtilityPosition} onUtilityResize={saveUtilitySize} onRoomDelete={deleteRoom} onElementDelete={deleteSelectedElement} onDoorChange={updateDoor} onWindowChange={updateWindow} />
         </div>
         {inspectorSupplement?.({ property: selectedProperty, room: activeRoom, selection, select })}
       </aside>
@@ -992,7 +1020,7 @@ function RoomDrawing({ room, layout, pixel, selection, placementActive, resizabl
       {layout.utilities.map((utility) => <UtilityDrawing key={utility.id} utility={utility} pixel={pixel} selected={selection?.kind === "utility" && selection.elementId === utility.id} onPointerDown={(event) => onObjectPointerDown(event, room, "utility", utility.id)} onSelect={() => onSelect({ kind: "utility", roomId: room.id, elementId: utility.id })} />)}
       {resizable && roomCorners.map((corner) => {
         const point = cornerPoint(rect, corner);
-        const size = pixel * 10;
+        const size = pixel * 7;
         const touch = pixel * 40;
         return <g key={corner} className="resize-handle">
           <rect x={point.x - size / 2} y={point.y - size / 2} width={size} height={size} rx={size / 5} />
@@ -1007,7 +1035,7 @@ function RoomDrawing({ room, layout, pixel, selection, placementActive, resizabl
         </g>;
       })}
       {resizable && notchCorner && <g className="resize-handle notch-handle">
-        <circle cx={notchCorner.x} cy={notchCorner.y} r={pixel * 6} />
+        <circle cx={notchCorner.x} cy={notchCorner.y} r={pixel * 5} />
         <circle
           cx={notchCorner.x} cy={notchCorner.y} r={pixel * 20}
           className="resize-hit"
@@ -1038,9 +1066,12 @@ function WindowDrawing({ layout, window, selected, onPointerDown, onSelect }: { 
 
 function UtilityDrawing({ utility, pixel, selected, onPointerDown, onSelect }: { utility: UtilityElement; pixel: number; selected: boolean; onPointerDown: (event: ReactPointerEvent<SVGGElement>) => void; onSelect: () => void }) {
   const glyph = utilityTypes.find((item) => item.type === utility.type)?.glyph ?? "•";
-  const radius = pixel * 11;
+  const rect = utilityRect(utility);
+  const touch = pixel * 40;
   return <g className={selected ? "utility-marker selected" : "utility-marker"} role="button" tabIndex={0} aria-label={`${utilityLabel(utility)} 선택`} onPointerDown={onPointerDown} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(); } }}>
-    <circle cx={utility.position.x} cy={utility.position.y} r={radius} /><text x={utility.position.x} y={utility.position.y + radius * 0.35} style={{ fontSize: pixel * 12 }} textAnchor="middle">{glyph}</text><circle cx={utility.position.x} cy={utility.position.y} r={radius} className="object-hit-circle" />
+    <rect x={rect.x} y={rect.y} width={rect.width} height={rect.height} />
+    <text x={utility.position.x} y={utility.position.y + pixel * 4} style={{ fontSize: pixel * 11 }} textAnchor="middle">{glyph}</text>
+    <rect x={utility.position.x - touch / 2} y={utility.position.y - touch / 2} width={touch} height={touch} className="object-hit-rect" />
   </g>;
 }
 
@@ -1070,7 +1101,7 @@ function GapDimension({ gap, pixel }: { gap: RoomGap; pixel: number }) {
   </g>;
 }
 
-function Inspector({ selection, room, gaps, onRoomName, onRoomResize, onRoomGap, onRoomNotch, onRoomDelete, onElementDelete, onDoorChange, onWindowChange }: {
+function Inspector({ selection, room, gaps, onRoomName, onRoomResize, onRoomGap, onRoomNotch, onElementMove, onUtilityMove, onUtilityResize, onRoomDelete, onElementDelete, onDoorChange, onWindowChange }: {
   selection: FloorPlanSelection;
   room: LocalRoom | undefined;
   gaps: RoomGap[];
@@ -1078,6 +1109,9 @@ function Inspector({ selection, room, gaps, onRoomName, onRoomResize, onRoomGap,
   onRoomResize: (room: LocalRoom, size: RoomLayout["size"]) => void;
   onRoomGap: (room: LocalRoom, gap: RoomGap, distance: number) => void;
   onRoomNotch: (room: LocalRoom, notch: RoomNotch | null) => void;
+  onElementMove: (room: LocalRoom, element: DoorElement | WindowElement, side: "start" | "end", clearance: number) => void;
+  onUtilityMove: (room: LocalRoom, utility: UtilityElement, position: Point) => void;
+  onUtilityResize: (room: LocalRoom, utility: UtilityElement, size: { width: number; height: number }) => void;
   onRoomDelete: (room: LocalRoom) => Promise<void>;
   onElementDelete: () => void;
   onDoorChange: (room: LocalRoom, elementId: ClientId, patch: Partial<DoorElement>) => void;
@@ -1093,15 +1127,95 @@ function Inspector({ selection, room, gaps, onRoomName, onRoomResize, onRoomGap,
   if (selection.kind === "door") {
     const door = room.layout.doors.find((item) => item.id === selection.elementId);
     if (!door) return null;
-    return <div className="inspector-content"><p className="eyebrow">문</p><h2>문</h2><label>문 폭 (mm)<input data-inspector-element={door.id} type="number" min="1" value={door.width} onChange={(event) => onDoorChange(room, door.id, { width: positiveNumber(event.target.value, door.width) })} aria-label="문 폭 밀리미터" /></label><fieldset><legend>경첩</legend><div className="choice-row"><button type="button" aria-pressed={door.hinge === "left"} className={door.hinge === "left" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { hinge: "left" })} aria-label="왼쪽 경첩">왼쪽</button><button type="button" aria-pressed={door.hinge === "right"} className={door.hinge === "right" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { hinge: "right" })} aria-label="오른쪽 경첩">오른쪽</button></div></fieldset><fieldset><legend>열림</legend><div className="choice-row"><button type="button" aria-pressed={door.opening === "inward"} className={door.opening === "inward" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { opening: "inward" })} aria-label="안쪽으로 열림">안쪽</button><button type="button" aria-pressed={door.opening === "outward"} className={door.opening === "outward" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { opening: "outward" })} aria-label="바깥쪽으로 열림">바깥쪽</button></div></fieldset><p className="inspector-help">호(arc)가 실제 문 열림 방향을 나타냅니다. 방향키로 벽을 따라 10mm씩(Shift 100mm) 옮깁니다.</p><button type="button" className="danger-action" onClick={onElementDelete} aria-label="문 삭제">문 삭제</button></div>;
+    return <div className="inspector-content"><p className="eyebrow">문</p><h2>문</h2><label>문 폭 (mm)<input data-inspector-element={door.id} type="number" min="1" value={door.width} onChange={(event) => onDoorChange(room, door.id, { width: positiveNumber(event.target.value, door.width) })} aria-label="문 폭 밀리미터" /></label><fieldset><legend>경첩</legend><div className="choice-row"><button type="button" aria-pressed={door.hinge === "left"} className={door.hinge === "left" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { hinge: "left" })} aria-label="왼쪽 경첩">왼쪽</button><button type="button" aria-pressed={door.hinge === "right"} className={door.hinge === "right" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { hinge: "right" })} aria-label="오른쪽 경첩">오른쪽</button></div></fieldset><fieldset><legend>열림</legend><div className="choice-row"><button type="button" aria-pressed={door.opening === "inward"} className={door.opening === "inward" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { opening: "inward" })} aria-label="안쪽으로 열림">안쪽</button><button type="button" aria-pressed={door.opening === "outward"} className={door.opening === "outward" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { opening: "outward" })} aria-label="바깥쪽으로 열림">바깥쪽</button></div></fieldset><WallClearanceEditor room={room} element={door} onMove={(side, clearance) => onElementMove(room, door, side, clearance)} /><p className="inspector-help">호(arc)가 실제 문 열림 방향을 나타냅니다. 방향키로 벽을 따라 10mm씩(Shift 100mm) 옮깁니다.</p><button type="button" className="danger-action" onClick={onElementDelete} aria-label="문 삭제">문 삭제</button></div>;
   }
   if (selection.kind === "window") {
     const window = room.layout.windows.find((item) => item.id === selection.elementId);
     if (!window) return null;
-    return <div className="inspector-content"><p className="eyebrow">창문</p><h2>창문</h2><label>폭 (mm)<input data-inspector-element={window.id} type="number" min="1" value={window.width} onChange={(event) => onWindowChange(room, window.id, { width: positiveNumber(event.target.value, window.width) })} aria-label="창문 폭 밀리미터" /></label><label>높이 (mm)<input type="number" min="1" value={window.height} onChange={(event) => onWindowChange(room, window.id, { height: positiveNumber(event.target.value, window.height) })} aria-label="창문 높이 밀리미터" /></label><label>바닥 높이 (mm)<input type="number" min="0" value={window.sillHeight} onChange={(event) => onWindowChange(room, window.id, { sillHeight: nonNegativeNumber(event.target.value, window.sillHeight) })} aria-label="창문 바닥 높이 밀리미터" /></label><label>개폐 방식<select value={window.opening} onChange={(event) => onWindowChange(room, window.id, { opening: event.target.value as WindowElement["opening"] })} aria-label="창문 개폐 방식"><option value="sliding">미닫이</option><option value="casement">여닫이</option><option value="fixed">고정</option><option value="other">기타</option></select></label><p className="inspector-help">방향키로 벽을 따라 10mm씩(Shift 100mm) 옮깁니다.</p><button type="button" className="danger-action" onClick={onElementDelete} aria-label="창문 삭제">창문 삭제</button></div>;
+    return <div className="inspector-content"><p className="eyebrow">창문</p><h2>창문</h2><label>폭 (mm)<input data-inspector-element={window.id} type="number" min="1" value={window.width} onChange={(event) => onWindowChange(room, window.id, { width: positiveNumber(event.target.value, window.width) })} aria-label="창문 폭 밀리미터" /></label><label>높이 (mm)<input type="number" min="1" value={window.height} onChange={(event) => onWindowChange(room, window.id, { height: positiveNumber(event.target.value, window.height) })} aria-label="창문 높이 밀리미터" /></label><label>바닥 높이 (mm)<input type="number" min="0" value={window.sillHeight} onChange={(event) => onWindowChange(room, window.id, { sillHeight: nonNegativeNumber(event.target.value, window.sillHeight) })} aria-label="창문 바닥 높이 밀리미터" /></label><label>개폐 방식<select value={window.opening} onChange={(event) => onWindowChange(room, window.id, { opening: event.target.value as WindowElement["opening"] })} aria-label="창문 개폐 방식"><option value="sliding">미닫이</option><option value="casement">여닫이</option><option value="fixed">고정</option><option value="other">기타</option></select></label><WallClearanceEditor room={room} element={window} onMove={(side, clearance) => onElementMove(room, window, side, clearance)} /><p className="inspector-help">방향키로 벽을 따라 10mm씩(Shift 100mm) 옮깁니다.</p><button type="button" className="danger-action" onClick={onElementDelete} aria-label="창문 삭제">창문 삭제</button></div>;
   }
   const utility = room.layout.utilities.find((item) => item.id === selection.elementId);
-  return utility ? <div className="inspector-content"><p className="eyebrow">설비</p><h2>{utilityLabel(utility)}</h2><p>위치: {utility.position.x} × {utility.position.y} mm</p><p className="inspector-help">방향키로 10mm씩(Shift 100mm) 옮깁니다.</p><button type="button" className="danger-action" onClick={onElementDelete} aria-label={`${utilityLabel(utility)} 삭제`}>{utilityLabel(utility)} 삭제</button></div> : null;
+  return utility ? <div className="inspector-content"><p className="eyebrow">설비</p><h2>{utilityLabel(utility)}</h2><UtilityPlacementEditor room={room} utility={utility} onMove={(position) => onUtilityMove(room, utility, position)} onResize={(size) => onUtilityResize(room, utility, size)} /><p className="inspector-help">벽 가까이 놓으면 벽에 붙습니다. 방향키로 10mm씩(Shift 100mm) 옮깁니다.</p><button type="button" className="danger-action" onClick={onElementDelete} aria-label={`${utilityLabel(utility)} 삭제`}>{utilityLabel(utility)} 삭제</button></div> : null;
+}
+
+/** Positions a door or window by the run of wall left on each side, the way a tape measures it. */
+function WallClearanceEditor({ room, element, onMove }: {
+  room: LocalRoom;
+  element: DoorElement | WindowElement;
+  onMove: (side: "start" | "end", clearance: number) => void;
+}) {
+  const clearances = wallElementClearances(room.layout, element);
+  const neighbours = wallNeighbours(element.wall);
+  const sides = [
+    { side: "start" as const, wall: neighbours.start, value: clearances.start },
+    { side: "end" as const, wall: neighbours.end, value: clearances.end },
+  ];
+  return <fieldset className="gap-editor">
+    <legend>벽에서 거리 (mm)</legend>
+    {sides.map(({ side, wall, value }) => <label key={side}>
+      <span>{wall ? wallLabel(wall) : side === "start" ? "벽 시작점" : "벽 끝점"}에서</span>
+      <input
+        type="number"
+        min="0"
+        defaultValue={value}
+        key={`${side}-${value}`}
+        onBlur={(event) => onMove(side, nonNegativeNumber(event.target.value, value))}
+        aria-label={`${wall ? wallLabel(wall) : side === "start" ? "벽 시작점" : "벽 끝점"}에서 거리 밀리미터`}
+      />
+    </label>)}
+  </fieldset>;
+}
+
+/** Positions a utility by its distance to each of the four walls around it. */
+function UtilityPlacementEditor({ room, utility, onMove, onResize }: {
+  room: LocalRoom;
+  utility: UtilityElement;
+  onMove: (position: Point) => void;
+  onResize: (size: { width: number; height: number }) => void;
+}) {
+  const bounds = roomRect(room.layout);
+  const rect = utilityRect(utility);
+  const size = utilitySize(utility);
+  const distances = [
+    { wall: "west" as Wall, value: Math.round(rect.x - bounds.x) },
+    { wall: "north" as Wall, value: Math.round(rect.y - bounds.y) },
+    { wall: "east" as Wall, value: Math.round(bounds.x + bounds.width - (rect.x + rect.width)) },
+    { wall: "south" as Wall, value: Math.round(bounds.y + bounds.height - (rect.y + rect.height)) },
+  ];
+  function moveTo(wall: Wall, distance: number) {
+    const gap = Math.max(0, distance);
+    if (wall === "west") onMove({ x: Math.round(bounds.x + gap + size.width / 2), y: utility.position.y });
+    else if (wall === "east") onMove({ x: Math.round(bounds.x + bounds.width - gap - size.width / 2), y: utility.position.y });
+    else if (wall === "north") onMove({ x: utility.position.x, y: Math.round(bounds.y + gap + size.height / 2) });
+    else onMove({ x: utility.position.x, y: Math.round(bounds.y + bounds.height - gap - size.height / 2) });
+  }
+  return <>
+    <fieldset className="gap-editor">
+      <legend>벽에서 거리 (mm)</legend>
+      {distances.map(({ wall, value }) => <label key={wall}>
+        <span>{wallLabel(wall)}에서</span>
+        <input
+          type="number"
+          min="0"
+          defaultValue={value}
+          key={`${wall}-${value}`}
+          onBlur={(event) => moveTo(wall, nonNegativeNumber(event.target.value, value))}
+          aria-label={`${wallLabel(wall)}에서 거리 밀리미터`}
+        />
+      </label>)}
+    </fieldset>
+    <fieldset className="gap-editor">
+      <legend>크기 (mm)</legend>
+      <label>
+        <span>가로</span>
+        <input type="number" min="1" defaultValue={size.width} key={`utility-width-${size.width}`} onBlur={(event) => onResize({ ...size, width: positiveNumber(event.target.value, size.width) })} aria-label="설비 가로 밀리미터" />
+      </label>
+      <label>
+        <span>세로</span>
+        <input type="number" min="1" defaultValue={size.height} key={`utility-height-${size.height}`} onBlur={(event) => onResize({ ...size, height: positiveNumber(event.target.value, size.height) })} aria-label="설비 세로 밀리미터" />
+      </label>
+    </fieldset>
+  </>;
 }
 
 /** Cuts one corner out of the room so it reads as an L, with the cut sized in millimetres. */
@@ -1176,7 +1290,7 @@ function PropertyEditor({ property, onSave, onDelete }: {
   return <form className="property-editor" onSubmit={(event) => void submit(event)} aria-label="집 정보 편집"><label>집 이름<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} aria-label="집 이름" /></label><label>주소<input value={draft.address} onChange={(event) => setDraft({ ...draft, address: event.target.value })} aria-label="집 주소" /></label><label>메모<textarea value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} aria-label="집 메모" /></label><button type="submit" className="secondary-action">집 정보 저장</button><button type="button" className="danger-action" onClick={() => void onDelete(property)} aria-label="집 삭제">집 삭제</button></form>;
 }
 
-function layoutWithDraggedObject(layout: RoomLayout, drag: ObjectDragState, point: Point): RoomLayout {
+function layoutWithDraggedObject(layout: RoomLayout, drag: ObjectDragState, point: Point, tolerance: number): RoomLayout {
   if (drag.kind === "door") {
     return { ...layout, doors: layout.doors.map((door) => door.id === drag.elementId ? moveWallElement(layout, door, point) : door) };
   }
@@ -1186,7 +1300,7 @@ function layoutWithDraggedObject(layout: RoomLayout, drag: ObjectDragState, poin
   return {
     ...layout,
     utilities: layout.utilities.map((utility) => utility.id === drag.elementId
-      ? { ...utility, position: clampUtilityPosition(layout, point) }
+      ? { ...utility, position: clampUtilityPosition(layout, snapUtilityToWall(layout, { ...utility, position: point }, tolerance)) }
       : utility),
   };
 }

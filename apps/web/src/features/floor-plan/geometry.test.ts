@@ -25,8 +25,13 @@ import {
   roomGaps,
   snapRoomPosition,
   snapTolerance,
+  snapUtilityToWall,
   targetWall,
+  utilityRect,
+  wallElementAtClearance,
+  wallElementClearances,
   wallElementPoints,
+  wallNeighbours,
   wallSegment,
   zoomViewport,
 } from "./geometry";
@@ -180,6 +185,38 @@ describe("notched (L-shaped) rooms", () => {
     // #then
     expect(box).toEqual({ x: 1_000, y: 3_000, width: 4_000, height: 2_000 });
     expect(roomLabelBox(layout)).toEqual({ x: 1_000, y: 2_000, width: 4_000, height: 3_000 });
+  });
+});
+
+describe("wall-mounted objects", () => {
+  it("pulls a utility flush against the wall it was dropped near, and leaves a central one alone", () => {
+    // #given
+    const nearNorth = { id: "utility_0001" as const, type: "outlet" as const, position: { x: 3_000, y: 2_090 } };
+    const middle = { ...nearNorth, position: { x: 3_000, y: 3_500 } };
+
+    // #when
+    const snapped = snapUtilityToWall(layout, nearNorth, 150);
+    const untouched = snapUtilityToWall(layout, middle, 150);
+
+    // #then
+    expect(snapped).toEqual({ x: 3_000, y: 2_060 });
+    expect(utilityRect({ position: snapped })).toMatchObject({ y: 2_000, height: 120 });
+    expect(untouched).toEqual(middle.position);
+  });
+
+  it("names the walls a door sits between and moves it to an exact clearance", () => {
+    // #given
+    const placed = door({ wall: "north", offset: 1_000, width: 800 });
+
+    // #when
+    const clearances = wallElementClearances(layout, placed);
+    const moved = wallElementAtClearance(layout, placed, "end", 500);
+
+    // #then
+    expect(wallNeighbours("north")).toEqual({ start: "west", end: "east" });
+    expect(clearances).toEqual({ start: 1_000, end: 2_200 });
+    expect(moved.offset).toBe(2_700);
+    expect(wallElementClearances(layout, moved)).toEqual({ start: 2_700, end: 500 });
   });
 });
 

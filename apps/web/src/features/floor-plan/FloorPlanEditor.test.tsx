@@ -181,7 +181,8 @@ describe("FloorPlanEditor", () => {
     fireEvent.pointerDown(document.querySelector(".utility-marker")!, { clientX: 290, clientY: 200, pointerId: 6 });
     fireEvent.pointerMove(canvas, { clientX: -100, clientY: -100, pointerId: 6 });
     fireEvent.pointerUp(canvas, { clientX: -100, clientY: -100, pointerId: 6 });
-    await waitFor(() => expect(document.querySelector(".utility-marker circle")?.getAttribute("cx")).toBe("900"));
+    // The glyph sits at the utility centre, which clamps to the room corner.
+    await waitFor(() => expect(document.querySelector(".utility-marker text")?.getAttribute("x")).toBe("900"));
   });
 
   it("zooms the canvas around its centre and restores the fitted view", async () => {

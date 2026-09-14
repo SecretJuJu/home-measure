@@ -512,10 +512,11 @@ label {
   stroke-width: 180;
 }
 
-.utility-marker circle {
+.utility-marker rect {
   fill: var(--warning-soft);
   stroke: var(--warning);
-  stroke-width: 32;
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
 }
 
 .utility-marker text {
@@ -524,9 +525,9 @@ label {
   pointer-events: none;
 }
 
-.utility-marker.selected circle {
+.utility-marker.selected rect {
   stroke: var(--warning);
-  stroke-width: 65;
+  stroke-width: 3px;
 }
 
 .empty-plan-label {
@@ -728,7 +729,7 @@ summary:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent)
 .sync-indicator small { padding-left: 6px; border-left: 1px solid var(--line); }
 .sync-indicator.error { color: var(--danger); }
 .sync-indicator.syncing { color: var(--accent); }
-.sync-indicator.offline { color: var(--warning); }
+.sync-indicator.offline, .sync-indicator.signed-out { color: var(--muted); }
 .sync-retry { padding-inline: 10px; border-color: var(--line); color: var(--ink); font-size: 11px; font-weight: 650; }
 .account-control { position: relative; display: flex; align-items: center; gap: 8px; }
 .account-control > button { padding-inline: 12px; border-color: var(--line); font-size: 12px; font-weight: 650; }
@@ -792,9 +793,9 @@ summary:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent)
 .object-hit-line { stroke: transparent; stroke-width: 44px; vector-effect: non-scaling-stroke; }
 .window-line { stroke: var(--muted); stroke-width: 9px; vector-effect: non-scaling-stroke; }
 .window-line.selected { stroke: var(--accent); stroke-width: 12px; }
-.utility-marker circle { fill: var(--surface); stroke: var(--muted); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.utility-marker rect { fill: var(--surface); stroke: var(--muted); stroke-width: 2px; vector-effect: non-scaling-stroke; }
 .utility-marker text { fill: var(--ink); }
-.utility-marker.selected circle { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 4px; }
+.utility-marker.selected rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 3px; }
 .inspector-content, .empty-inspector { gap: 10px; }
 .inspector-content h2, .empty-inspector h2 { font-size: 17px; }
 .inspector-help, .empty-inspector p { font-size: 11px; }
@@ -892,7 +893,7 @@ summary:focus-visible, textarea:focus-visible { outline: 3px solid var(--accent)
   .checklist-copy small { font-size: 12px; }
 }
 
-.utility-marker circle.object-hit-circle { fill: transparent; stroke: transparent; stroke-width: 44px; vector-effect: non-scaling-stroke; }
+.utility-marker rect.object-hit-rect { fill: transparent; stroke: none; }
 .quick-add-toolbar button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 
 /* Field mode reserves space for actions outside the scrolling content. */

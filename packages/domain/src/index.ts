@@ -102,10 +102,20 @@ export const windowElementSchema = z.object({
   note: z.string().trim().max(2_000).optional(),
 }).strict();
 
+export const elementSizeSchema = z.object({
+  width: positiveMillimetersSchema,
+  height: positiveMillimetersSchema,
+}).strict();
+
+/** Default footprint for a utility drawn without its own measured size. */
+export const defaultUtilitySize = { width: 120, height: 120 } as const;
+
 export const utilityElementSchema = z.object({
   id: clientIdSchema,
   type: utilityTypeSchema,
+  /** Centre of the footprint, so an older record without a size keeps the same anchor point. */
   position: pointSchema,
+  size: elementSizeSchema.optional(),
   note: z.string().trim().max(2_000).optional(),
 }).strict();
 
@@ -183,6 +193,32 @@ export function roomWallLengths(layout: {
     notchHorizontal: notch?.width ?? 0,
     notchVertical: notch?.height ?? 0,
   };
+}
+
+/**
+ * Upgrades a stored layout to the current shape, oldest step first. A room drawn months ago on a
+ * device that never synced still has to open, so every released shape needs a step here rather than
+ * a rewrite of the schema above.
+ *
+ * Two rules keep this table short:
+ * - Add fields as optional and never repurpose a name, so the version does not have to move.
+ * - Bump `layoutVersion` only for a change that cannot be expressed that way, and add the step that
+ *   converts the previous version in the same commit.
+ */
+const roomLayoutUpgrades: ReadonlyArray<(layout: Record<string, unknown>) => Record<string, unknown>> = [];
+
+/** Reads a layout written by any released version of the app, or null when it is unrecognisable. */
+export function parseRoomLayout(raw: unknown): RoomLayout | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  let layout = raw as Record<string, unknown>;
+  const storedVersion = typeof layout.version === "number" ? layout.version : 0;
+  for (let version = storedVersion; version < layoutVersion; version += 1) {
+    const upgrade = roomLayoutUpgrades[version - 1];
+    if (!upgrade) return null;
+    layout = upgrade(layout);
+  }
+  const result = roomLayoutSchema.safeParse(layout);
+  return result.success ? result.data : null;
 }
 
 const optionalTextSchema = z.string().trim().max(4_000).nullable();

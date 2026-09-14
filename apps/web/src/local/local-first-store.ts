@@ -2,7 +2,7 @@ import { clientMutationIdSchema, type ClientId, type ClientMutationId } from "@h
 import type { Table } from "dexie";
 import { createStore, type StoreApi } from "zustand/vanilla";
 
-import type { ApiClient } from "./api-client";
+import { ApiRequestError, type ApiClient } from "./api-client";
 import { HomeMeasureDatabase } from "./database";
 import type {
   LocalChecklistItem,
@@ -18,7 +18,7 @@ import type {
   QueuedOperation,
 } from "./entities";
 
-export type SyncStatus = "idle" | "syncing" | "offline" | "error";
+export type SyncStatus = "idle" | "syncing" | "offline" | "signed-out" | "error";
 
 export interface LocalFirstState {
   hydrated: boolean;
@@ -83,6 +83,11 @@ function syncErrorMessage(error: unknown): string {
 
 function isOfflineError(error: unknown): boolean {
   return error instanceof TypeError || (typeof navigator !== "undefined" && !navigator.onLine);
+}
+
+/** A rejected session is not a failure to fix but a sign-in the person has not done yet. */
+function isSignedOutError(error: unknown): boolean {
+  return error instanceof ApiRequestError && (error.status === 401 || error.status === 403);
 }
 
 export class LocalFirstRepository {
@@ -289,7 +294,7 @@ export class LocalFirstRepository {
           lastError: message,
         });
         this.store.setState({
-          syncStatus: isOfflineError(error) ? "offline" : "error",
+          syncStatus: isOfflineError(error) ? "offline" : isSignedOutError(error) ? "signed-out" : "error",
           lastSyncError: message,
           pendingOperationCount: await this.db.operations.count(),
         });

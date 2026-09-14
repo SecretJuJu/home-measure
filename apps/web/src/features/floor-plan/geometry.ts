@@ -1,11 +1,12 @@
-import type {
-  DoorElement,
-  RoomCorner,
-  RoomLayout,
-  RoomNotch,
-  UtilityElement,
-  Wall,
-  WindowElement,
+import {
+  defaultUtilitySize,
+  type DoorElement,
+  type RoomCorner,
+  type RoomLayout,
+  type RoomNotch,
+  type UtilityElement,
+  type Wall,
+  type WindowElement,
 } from "@home-measure/domain";
 
 export type { RoomCorner, Wall };
@@ -219,6 +220,47 @@ export function wallPoint(layout: RoomLayout, wall: Wall, offset: number): Point
   };
 }
 
+/**
+ * The walls a wall's two ends run into. A door's position is easiest to give as a distance from the
+ * wall beside it, and that is the wall this names.
+ */
+export function wallNeighbours(wall: Wall): { start: Wall | null; end: Wall | null } {
+  switch (wall) {
+    case "north": return { start: "west", end: "east" };
+    case "east": return { start: "north", end: "south" };
+    case "south": return { start: "east", end: "west" };
+    case "west": return { start: "south", end: "north" };
+    default: return { start: null, end: null };
+  }
+}
+
+/** Free run of wall on either side of an element: what the user measures with a tape. */
+export function wallElementClearances(
+  layout: RoomLayout,
+  element: Pick<DoorElement | WindowElement, "wall" | "offset" | "width">,
+): { start: number; end: number } {
+  const length = wallSegment(layout, element.wall).length;
+  return {
+    start: Math.round(element.offset),
+    end: Math.round(Math.max(0, length - element.offset - element.width)),
+  };
+}
+
+/** Places an element so the requested run of wall is left on the chosen side. */
+export function wallElementAtClearance<T extends DoorElement | WindowElement>(
+  layout: RoomLayout,
+  element: T,
+  side: "start" | "end",
+  clearance: number,
+): T {
+  const length = wallSegment(layout, element.wall).length;
+  const gap = Math.max(0, Math.round(clearance));
+  return clampWallElement(layout, {
+    ...element,
+    offset: side === "start" ? gap : length - element.width - gap,
+  });
+}
+
 export function wallElementPoints(
   layout: RoomLayout,
   element: Pick<DoorElement | WindowElement, "wall" | "offset" | "width">,
@@ -290,6 +332,70 @@ export function clampWallElement<T extends Pick<DoorElement | WindowElement, "wa
   const length = wallSegment(layout, element.wall).length;
   const width = clamp(Math.round(element.width), 1, length);
   return { ...element, width, offset: clamp(Math.round(element.offset), 0, length - width) };
+}
+
+export function utilitySize(utility: Pick<UtilityElement, "size">): { width: number; height: number } {
+  return utility.size ?? defaultUtilitySize;
+}
+
+/** The footprint a utility occupies, centred on its stored position. */
+export function utilityRect(utility: Pick<UtilityElement, "position" | "size">): Rect {
+  const size = utilitySize(utility);
+  return {
+    x: utility.position.x - size.width / 2,
+    y: utility.position.y - size.height / 2,
+    width: size.width,
+    height: size.height,
+  };
+}
+
+/**
+ * Outlets, taps and drains sit against a wall, so a drop near one lands flush on it instead of
+ * floating in the room. Further away the point is left where the user put it.
+ */
+export function snapUtilityToWall(
+  layout: RoomLayout,
+  utility: Pick<UtilityElement, "position" | "size">,
+  tolerance: number,
+): Point {
+  const size = utilitySize(utility);
+  let closest: { distance: number; position: Point } | null = null;
+  for (const wall of roomWalls(layout)) {
+    const segment = wallSegment(layout, wall);
+    if (segment.length === 0) continue;
+    const direction = unitDirection(segment);
+    const projected = (utility.position.x - segment.start.x) * direction.x + (utility.position.y - segment.start.y) * direction.y;
+    if (projected < 0 || projected > segment.length) continue;
+    const onWall = { x: segment.start.x + direction.x * projected, y: segment.start.y + direction.y * projected };
+    const distance = Math.hypot(utility.position.x - onWall.x, utility.position.y - onWall.y);
+    if (distance > tolerance || (closest && distance >= closest.distance)) continue;
+    // Sit the footprint beside the wall rather than straddling it.
+    const inward = interiorNormal(layout, segment, direction);
+    closest = {
+      distance,
+      position: {
+        x: Math.round(onWall.x + inward.x * (size.width / 2)),
+        y: Math.round(onWall.y + inward.y * (size.height / 2)),
+      },
+    };
+  }
+  return closest?.position ?? utility.position;
+}
+
+/** Which side of a wall the room is on, from the clockwise walk: the interior is to the right. */
+function interiorNormal(layout: RoomLayout, segment: WallSegment, direction: Point): Point {
+  const right = { x: -direction.y, y: direction.x };
+  const probe = { x: segment.start.x + direction.x * (segment.length / 2) + right.x, y: segment.start.y + direction.y * (segment.length / 2) + right.y };
+  return containsPoint(layout, probe) ? right : { x: -right.x, y: -right.y };
+}
+
+/** True when the point lies inside the room outline, with the notched corner excluded. */
+export function containsPoint(layout: RoomLayout, point: Point): boolean {
+  const rect = roomRect(layout);
+  const inside = point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height;
+  if (!inside) return false;
+  const cut = notchRect(layout);
+  return !cut || !(point.x > cut.x && point.x < cut.x + cut.width && point.y > cut.y && point.y < cut.y + cut.height);
 }
 
 /** Keeps an in-room utility marker inside the room, and out of the corner a notch cut away. */
