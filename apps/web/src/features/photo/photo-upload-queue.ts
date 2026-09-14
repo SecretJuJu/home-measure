@@ -32,8 +32,9 @@ export class HttpPhotoUploadClient implements PhotoUploadClient {
 
 export interface PhotoContext {
   property: Pick<LocalProperty, "id">;
-  room: Pick<LocalRoom, "id" | "name">;
-  checklistItem: { id: ClientId; label: string; elementId: ClientId | null };
+  /** A photo taken straight from the sketchpad may not belong to a room or a checklist item yet. */
+  room?: Pick<LocalRoom, "id" | "name">;
+  checklistItem?: { id: ClientId; label: string; elementId: ClientId | null };
   note?: string | null;
 }
 
@@ -58,9 +59,9 @@ function photoMetadata(
   return {
     id: photoId,
     propertyId: context.property.id,
-    roomId: context.room.id,
-    elementId: context.checklistItem.elementId,
-    checklistItemId: context.checklistItem.id,
+    roomId: context.room?.id ?? null,
+    elementId: context.checklistItem?.elementId ?? null,
+    checklistItemId: context.checklistItem?.id ?? null,
     r2Key: photoObjectKey(context.property.id, photoId, compressed.mimeType),
     mimeType: compressed.mimeType,
     width: compressed.width,

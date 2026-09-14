@@ -326,6 +326,62 @@ describe("Worker photo binary upload", () => {
   });
 });
 
+describe("photo annotations", () => {
+  const owner = { ENVIRONMENT: "development", DEV_AUTH_USER_ID: "user_0001", DEV_AUTH_USERNAME: "developer" } as const;
+  const property: StoredProperty = { id: "property_0001", userId: "user_0001", name: "Owner home" };
+  const photo: StoredPhoto = { id: "photo_00001", userId: "user_0001", propertyId: property.id, r2Key: "photos/a.webp", mimeType: "image/webp", uploadStatus: "uploaded" };
+
+  it("stores a sketch against a photo the account owns and refuses one it does not", async () => {
+    // #given
+    const db = new FakeD1([property], [photo]);
+    const app = createApp();
+    const env = bindings(db, owner);
+    const annotation = {
+      version: 1,
+      marks: [{ id: "mark_0001", kind: "measure", start: { x: 0.1, y: 0.2 }, end: { x: 0.8, y: 0.2 }, text: "2,340 mm" }],
+    };
+
+    // #when
+    const saved = await app.fetch(request("/api/photos/photo_00001/annotation", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientMutationId: "mutation_note0001", data: annotation }),
+    }), env);
+    const foreign = await app.fetch(request("/api/photos/photo_99999/annotation", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientMutationId: "mutation_note0002", data: annotation }),
+    }), env);
+
+    // #then
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({ photo: { id: "photo_00001", annotation } });
+    expect(foreign.status).toBe(404);
+    expect(db.statements.some((statement) => statement.query.includes("UPDATE photos SET annotation_json"))).toBe(true);
+  });
+
+  it("rejects a sketch whose coordinates are not on the photo", async () => {
+    // #given
+    const db = new FakeD1([property], [photo]);
+    const app = createApp();
+    const env = bindings(db, owner);
+
+    // #when
+    const response = await app.fetch(request("/api/photos/photo_00001/annotation", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        clientMutationId: "mutation_note0003",
+        data: { version: 1, marks: [{ id: "mark_0001", kind: "note", position: { x: 40, y: 0.2 }, text: "밖" }] },
+      }),
+    }), env);
+
+    // #then
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid_request" });
+  });
+});
+
 describe("username and password accounts", () => {
   const credentials = { username: "field.owner", password: "measure-tape-2026" };
 

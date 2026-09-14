@@ -7,9 +7,9 @@ import { ChecklistPanel } from "./ChecklistPanel";
 import { createChecklistDefaults, newClientId } from "./definitions";
 import { MeasurementMode } from "./MeasurementMode";
 import { PropertySummary } from "./PropertySummary";
-import { HttpPhotoUploadClient, PhotoUploadQueue } from "../photo";
+import { HttpPhotoUploadClient, PhotoSketchMode, PhotoUploadQueue } from "../photo";
 
-type Surface = "editor" | "measurement" | "summary";
+type Surface = "editor" | "measurement" | "summary" | "photo";
 
 function useLocalState(repository: LocalFirstRepository) {
   return useSyncExternalStore(repository.store.subscribe, repository.store.getState, repository.store.getInitialState);
@@ -48,6 +48,7 @@ export function HomeMeasureWorkspace() {
   const [surface, setSurface] = useState<Surface>("editor");
   const [measurementTarget, setMeasurementTarget] = useState<{ roomId: string; itemId: string } | null>(null);
   const [summaryPropertyId, setSummaryPropertyId] = useState<string | null>(null);
+  const [photoPropertyId, setPhotoPropertyId] = useState<string | null>(null);
   const defaultsStartedForRoom = useRef(new Set<string>());
 
   useEffect(() => () => {
@@ -67,6 +68,7 @@ export function HomeMeasureWorkspace() {
   const measurementItem = measurementTarget ? state.checklistItems[measurementTarget.itemId] : undefined;
   const measurementProperty = measurementRoom ? state.properties[measurementRoom.propertyId] : undefined;
   const summaryProperty = summaryPropertyId ? state.properties[summaryPropertyId] : selectedProperty;
+  const photoProperty = photoPropertyId ? state.properties[photoPropertyId] : selectedProperty;
 
   const createDefaults = useCallback(async (room: LocalRoom) => {
     if (defaultsStartedForRoom.current.has(room.id)) return;
@@ -98,6 +100,15 @@ export function HomeMeasureWorkspace() {
   if (surface === "measurement" && measurementProperty && measurementRoom && measurementItem) {
     return <MeasurementMode repository={repository} photoQueue={photoQueue} property={measurementProperty as LocalProperty} room={measurementRoom} initialItem={measurementItem} onExit={() => setSurface("editor")} />;
   }
+  if (surface === "photo" && photoProperty) {
+    return <PhotoSketchMode
+      repository={repository}
+      queue={photoQueue}
+      property={photoProperty as LocalProperty}
+      rooms={Object.values(state.rooms).filter((room) => room.propertyId === photoProperty.id)}
+      onClose={() => setSurface("editor")}
+    />;
+  }
   if (surface === "summary" && summaryProperty) {
     return <PropertySummary repository={repository} property={summaryProperty as LocalProperty} onBack={() => setSurface("editor")} />;
   }
@@ -108,6 +119,7 @@ export function HomeMeasureWorkspace() {
     onSelectionChange={setSelection}
     onRoomCreated={createDefaults}
     onOpenSummary={(property) => { setSummaryPropertyId(property.id); setSurface("summary"); }}
+    onOpenPhotos={(property) => { setPhotoPropertyId(property.id); setSurface("photo"); }}
     inspectorSupplement={({ property, room, selection: canvasSelection, select }) => <ChecklistPanel
       repository={repository}
       property={property}
@@ -116,6 +128,7 @@ export function HomeMeasureWorkspace() {
       onSelectionChange={select}
       onStartMeasurement={startMeasurement}
       onOpenSummary={() => { setSummaryPropertyId(property.id); setSurface("summary"); }}
+      onOpenPhotos={() => { setPhotoPropertyId(property.id); setSurface("photo"); }}
     />}
   />;
 }

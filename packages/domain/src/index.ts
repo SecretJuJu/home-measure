@@ -350,6 +350,56 @@ export const photoCreateSchema = z.object({
   note: optionalTextSchema.optional(),
 }).strict();
 
+export const annotationVersion = 1 as const;
+
+/**
+ * Annotation coordinates are fractions of the photo, not pixels, so a sketch drawn on a phone still
+ * lines up when the same photo is opened on an iPad or after the image is recompressed. A little
+ * overshoot is allowed because a finger often runs past the edge.
+ */
+const annotationAxisSchema = z.number().finite().min(-0.25).max(1.25);
+export const annotationPointSchema = z.object({
+  x: annotationAxisSchema,
+  y: annotationAxisSchema,
+}).strict();
+
+const annotationTextSchema = z.string().trim().max(40);
+
+export const penMarkSchema = z.object({
+  id: clientIdSchema,
+  kind: z.literal("pen"),
+  points: z.array(annotationPointSchema).min(2).max(2_000),
+}).strict();
+
+/** A line drawn between two points on the photo with the length written against it. */
+export const measureMarkSchema = z.object({
+  id: clientIdSchema,
+  kind: z.literal("measure"),
+  start: annotationPointSchema,
+  end: annotationPointSchema,
+  text: annotationTextSchema,
+}).strict();
+
+export const noteMarkSchema = z.object({
+  id: clientIdSchema,
+  kind: z.literal("note"),
+  position: annotationPointSchema,
+  text: annotationTextSchema,
+}).strict();
+
+export const photoMarkSchema = z.discriminatedUnion("kind", [penMarkSchema, measureMarkSchema, noteMarkSchema]);
+
+export const photoAnnotationSchema = z.object({
+  version: z.literal(annotationVersion),
+  marks: z.array(photoMarkSchema).max(400),
+}).strict();
+
+/** Reads an annotation written by any released version, or null when it cannot be understood. */
+export function parsePhotoAnnotation(raw: unknown): PhotoAnnotation | null {
+  const result = photoAnnotationSchema.safeParse(raw);
+  return result.success ? result.data : null;
+}
+
 export function mutationEnvelopeSchema<T extends z.ZodType>(data: T) {
   return z.object({
     clientMutationId: clientMutationIdSchema,
@@ -368,6 +418,7 @@ export const checklistUpdateMutationSchema = mutationEnvelopeSchema(checklistUpd
 export const measurementCreateMutationSchema = mutationEnvelopeSchema(measurementCreateSchema);
 export const measurementUpdateMutationSchema = mutationEnvelopeSchema(measurementUpdateSchema);
 export const photoCreateMutationSchema = mutationEnvelopeSchema(photoCreateSchema);
+export const photoAnnotationMutationSchema = mutationEnvelopeSchema(photoAnnotationSchema);
 
 export type Credentials = z.infer<typeof credentialsSchema>;
 export type ClientId = z.infer<typeof clientIdSchema>;
@@ -389,3 +440,6 @@ export type ChecklistUpdate = z.infer<typeof checklistUpdateSchema>;
 export type MeasurementCreate = z.infer<typeof measurementCreateSchema>;
 export type MeasurementUpdate = z.infer<typeof measurementUpdateSchema>;
 export type PhotoCreate = z.infer<typeof photoCreateSchema>;
+export type PhotoAnnotation = z.infer<typeof photoAnnotationSchema>;
+export type PhotoMark = z.infer<typeof photoMarkSchema>;
+export type AnnotationPoint = z.infer<typeof annotationPointSchema>;

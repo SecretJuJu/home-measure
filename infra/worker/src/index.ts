@@ -7,6 +7,7 @@ import {
   emptyMutationSchema,
   measurementCreateMutationSchema,
   measurementUpdateMutationSchema,
+  photoAnnotationMutationSchema,
   photoCreateMutationSchema,
   propertyCreateMutationSchema,
   propertyUpdateMutationSchema,
@@ -782,6 +783,23 @@ export function createApp(): Hono<AppEnv> {
         ).bind(now(), photoId, user.id).run();
       }
       return { status: 200, body: { photoId, uploadStatus: "uploaded" } };
+    });
+    return Response.json(result.body, { status: result.status });
+  });
+
+  app.put("/api/photos/:id/annotation", async (context) => {
+    const photoId = validPathId(context.req.param("id"));
+    const input = await readJson(context.req.raw, photoAnnotationMutationSchema);
+    if (!photoId || !input) return jsonError(400, "invalid_request");
+    const user = context.get("authUser");
+    const photo = await ownedPhoto(context.env.DB, photoId, user.id);
+    if (!photo) return jsonError(404, "not_found");
+    const result = await runMutation(context.env.DB, user.id, input.clientMutationId, async () => {
+      const timestamp = now();
+      await context.env.DB.prepare(
+        "UPDATE photos SET annotation_json = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+      ).bind(JSON.stringify(input.data), timestamp, photoId, user.id).run();
+      return { status: 200, body: { photo: { id: photoId, annotation: input.data, updatedAt: timestamp } } };
     });
     return Response.json(result.body, { status: result.status });
   });

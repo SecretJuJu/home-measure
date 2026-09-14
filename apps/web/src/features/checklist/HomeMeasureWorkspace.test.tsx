@@ -102,7 +102,7 @@ function LinkedCanvasTest({ repository }: { repository: LocalFirstRepository }) 
       selection={canvasSelection}
       onSelectionChange={select}
       onStartMeasurement={() => undefined}
-      onOpenSummary={() => undefined}
+      onOpenSummary={() => undefined} onOpenPhotos={() => undefined}
     />}
   />;
 }

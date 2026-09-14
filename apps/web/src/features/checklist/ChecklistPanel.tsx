@@ -14,6 +14,7 @@ interface ChecklistPanelProps {
   onSelectionChange: (selection: FloorPlanSelection) => void;
   onStartMeasurement: (room: LocalRoom, item: LocalChecklistItem) => void;
   onOpenSummary: () => void;
+  onOpenPhotos: () => void;
 }
 
 interface LinkedElement {
@@ -48,6 +49,7 @@ export function ChecklistPanel({
   onSelectionChange,
   onStartMeasurement,
   onOpenSummary,
+  onOpenPhotos,
 }: ChecklistPanelProps) {
   const state = useLocalState(repository);
   const [missingOnly, setMissingOnly] = useState(false);
@@ -149,7 +151,7 @@ export function ChecklistPanel({
       {room && (
         <div className="checklist-actions">
           <button type="button" className={missingOnly ? "selected" : ""} onClick={() => setMissingOnly(!missingOnly)} aria-pressed={missingOnly}>미측정만 보기</button>
-          <button type="button" className="primary-action" disabled={!firstIncomplete} onClick={() => firstIncomplete && onStartMeasurement(room, firstIncomplete)}>실측 모드 ▶</button>
+          <button type="button" className="primary-action" onClick={onOpenPhotos}>사진 실측 ▶</button><button type="button" className="secondary-action" disabled={!firstIncomplete} onClick={() => firstIncomplete && onStartMeasurement(room, firstIncomplete)}>실측 모드 ▶</button>
         </div>
       )}
 

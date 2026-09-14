@@ -1,5 +1,6 @@
 import type {
   ChecklistCreate,
+  PhotoAnnotation,
   ClientId,
   ClientMutationId,
   MeasurementCreate,
@@ -54,6 +55,8 @@ export interface LocalPhotoMetadata extends PhotoCreate, LocalSyncFields {
   height: number | null;
   note: string | null;
   createdAt: number;
+  /** Pen marks and measurement lines drawn on the photo, kept as coordinates so they stay editable. */
+  annotation?: PhotoAnnotation | undefined;
   /** Upload lifecycle is local-only; the D1 metadata row is not proof that R2 has the image. */
   uploadStatus: PhotoUploadStatus;
   uploadMutationId: ClientMutationId;

@@ -99,6 +99,7 @@ export interface FloorPlanEditorProps {
   onSelectionChange?: (selection: FloorPlanSelection) => void;
   onRoomCreated?: (room: LocalRoom) => Promise<void>;
   onOpenSummary?: (property: LocalProperty) => void;
+  onOpenPhotos?: (property: LocalProperty) => void;
   inspectorSupplement?: (context: FloorPlanInspectorContext) => ReactNode;
 }
 
@@ -179,6 +180,7 @@ export function FloorPlanEditor({
   onRoomCreated,
   inspectorSupplement,
   onOpenSummary,
+  onOpenPhotos,
 }: FloorPlanEditorProps = {}) {
   const [ownedRepository] = useState(() => new LocalFirstRepository(new HomeMeasureDatabase(), new HttpApiClient()));
   const repository = repositoryProp ?? ownedRepository;
@@ -946,6 +948,7 @@ export function FloorPlanEditor({
             <button type="button" aria-label="실행 취소" disabled={past.length === 0} onClick={() => stepHistory("undo")}>↺</button>
             <button type="button" aria-label="다시 실행" disabled={future.length === 0} onClick={() => stepHistory("redo")}>↻</button>
           </div>
+          {onOpenPhotos && <button type="button" className="photo-trigger" onClick={() => onOpenPhotos(selectedProperty)} aria-label="사진 실측 열기">사진 실측</button>}
           <button ref={inspectorTriggerRef} className="inspector-trigger" type="button" aria-expanded={inspectorOpen} onClick={() => setInspectorOpen(true)}>속성 · 체크리스트</button>
           {placement && <button type="button" onClick={() => setPlacement(null)} aria-label="배치 취소">취소</button>}
         </div>
@@ -1007,6 +1010,7 @@ export function FloorPlanEditor({
       <nav className="mobile-navigation" aria-label="현장 화면" inert={inspectorOpen}>
         <button type="button" aria-pressed={mobileView === "checklist"} onClick={() => { setMobileView("checklist"); setInspectorOpen(false); }}>체크리스트</button>
         <button type="button" aria-pressed={mobileView === "plan"} onClick={() => setMobileView("plan")}>평면도</button>
+        {onOpenPhotos && <button type="button" onClick={() => onOpenPhotos(selectedProperty)}>사진</button>}
         {onOpenSummary && <button type="button" onClick={() => onOpenSummary(selectedProperty)}>요약</button>}
       </nav>
     </main>

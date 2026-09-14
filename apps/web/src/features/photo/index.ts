@@ -9,3 +9,6 @@ export {
   scaledPhotoDimensions,
   validatePhotoFile,
 } from "./photo-processing";
+export { PhotoSketchMode } from "./PhotoSketchMode";
+export { PhotoSketchpad } from "./PhotoSketchpad";
+export { emptyAnnotation, markAt, meaningfulMarks, penPath, toAnnotationPoint, type AnnotationTool } from "./annotation";
