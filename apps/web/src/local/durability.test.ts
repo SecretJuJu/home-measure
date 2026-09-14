@@ -81,6 +81,91 @@ describe("stored measurements survive a new release", () => {
     expect(parseRoomLayout({ version: 99, position: { x: 0, y: 0 } })).toBeNull();
   });
 
+  it("uploads a record the server never received instead of retrying its update forever", async () => {
+    // #given a device whose room was synced under an account that no longer exists
+    const db = open(`durability-${crypto.randomUUID()}`);
+    const property: LocalProperty = { id: "property_0003", name: "성수동 새집", address: null, note: null, createdAt: 3, updatedAt: 3, dirty: false };
+    const room: LocalRoom = {
+      id: "room_0003",
+      propertyId: property.id,
+      name: "거실",
+      type: "living_room",
+      layout: { version: 1, position: { x: 900, y: 900 }, size: { width: 4_400, height: 3_300 }, doors: [], windows: [], utilities: [] },
+      createdAt: 3,
+      updatedAt: 3,
+      dirty: true,
+    };
+    await db.properties.put(property);
+    await db.rooms.put(room);
+    const sent: string[] = [];
+    const known = new Set<string>();
+    const repository = new LocalFirstRepository(db, {
+      send: async (operation) => {
+        sent.push(`${operation.method} ${operation.path}`);
+        // Mirrors the Worker: a room can only be created under a property the account owns.
+        if (operation.method === "POST") {
+          if (operation.path.startsWith("/properties/") && !known.has(operation.propertyId)) throw new ApiRequestError(404);
+          known.add(operation.entityId);
+          return;
+        }
+        if (!known.has(operation.entityId)) throw new ApiRequestError(404);
+      },
+    });
+
+    // #when the only queued work is an update for that unknown room
+    await repository.persistOptimisticChange({
+      entityKind: "room",
+      entity: room,
+      operation: { clientMutationId: "mutation_0003", method: "PUT", path: `/rooms/${room.id}/layout`, body: { clientMutationId: "mutation_0003", data: room.layout } },
+    });
+    await repository.flush();
+    const state = repository.store.getState();
+    repository.dispose();
+
+    // #then the property and room are created, the update lands, and nothing is left behind
+    expect(sent).toEqual([
+      `PUT /rooms/${room.id}/layout`,
+      `POST /properties/${property.id}/rooms`,
+      "POST /properties",
+      `POST /properties/${property.id}/rooms`,
+    ]);
+    expect(state.syncStatus).toBe("idle");
+    expect(state.pendingOperationCount).toBe(0);
+    expect(await db.operations.count()).toBe(0);
+  });
+
+  it("queues one upload for a plan nudged many times before it ever reaches the server", async () => {
+    // #given
+    const db = open(`durability-${crypto.randomUUID()}`);
+    const room: LocalRoom = {
+      id: "room_0004",
+      propertyId: "property_0004",
+      name: "거실",
+      type: "living_room",
+      layout: { version: 1, position: { x: 900, y: 900 }, size: { width: 4_400, height: 3_300 }, doors: [], windows: [], utilities: [] },
+      createdAt: 4,
+      updatedAt: 4,
+      dirty: true,
+    };
+    const repository = new LocalFirstRepository(db, { send: async () => { throw new ApiRequestError(401); } });
+
+    // #when the same room layout is written ten times while signed out
+    for (let nudge = 0; nudge < 10; nudge += 1) {
+      const layout = { ...room.layout, position: { x: 900 + nudge * 10, y: 900 } };
+      await repository.persistOptimisticChange({
+        entityKind: "room",
+        entity: { ...room, layout },
+        operation: { clientMutationId: `mutation_000400${nudge}`, method: "PUT", path: `/rooms/${room.id}/layout`, body: { clientMutationId: `mutation_000400${nudge}`, data: layout } },
+      });
+    }
+    const queued = await db.operations.toArray();
+    repository.dispose();
+
+    // #then only the newest write is waiting, and it carries the latest position
+    expect(queued).toHaveLength(1);
+    expect((queued[0]?.body.data as { position: { x: number } }).position.x).toBe(990);
+  });
+
   it("keeps queued mutations for a signed-out device instead of discarding them", async () => {
     // #given
     const name = `durability-${crypto.randomUUID()}`;

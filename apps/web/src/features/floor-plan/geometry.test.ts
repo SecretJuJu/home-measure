@@ -28,6 +28,7 @@ import {
   snapUtilityToWall,
   targetWall,
   utilityRect,
+  wallElevation,
   wallElementAtClearance,
   wallElementClearances,
   wallElementPoints,
@@ -217,6 +218,49 @@ describe("wall-mounted objects", () => {
     expect(clearances).toEqual({ start: 1_000, end: 2_200 });
     expect(moved.offset).toBe(2_700);
     expect(wallElementClearances(layout, moved)).toEqual({ start: 2_700, end: 500 });
+  });
+});
+
+describe("wall elevation", () => {
+  const wall: RoomLayout = {
+    ...layout,
+    ceilingHeight: 2_400,
+    doors: [door({ wall: "north", offset: 300, width: 900, height: 2_050 })],
+    windows: [{ id: "window_0001", wall: "north", offset: 2_000, width: 1_600, height: 1_200, sillHeight: 900, opening: "sliding" }],
+    utilities: [
+      { id: "utility_0001", type: "outlet", position: { x: 1_600, y: 2_060 }, floorHeight: 250 },
+      { id: "utility_0002", type: "outlet", position: { x: 1_600, y: 4_900 } },
+    ],
+  };
+
+  it("lays the wall out face-on with each item's height above the floor", () => {
+    // #when
+    const elevation = wallElevation(wall, "north");
+
+    // #then
+    expect(elevation).toMatchObject({ length: 4_000, ceiling: 2_400, ceilingMeasured: true });
+    expect(elevation.items.map((item) => ({ kind: item.kind, offset: item.offset, bottom: item.bottom, height: item.height }))).toEqual([
+      { kind: "door", offset: 300, bottom: 0, height: 2_050 },
+      { kind: "utility", offset: 540, bottom: 250, height: 120 },
+      { kind: "window", offset: 2_000, bottom: 900, height: 1_200 },
+    ]);
+  });
+
+  it("marks a height nobody measured instead of passing the assumption off as a reading", () => {
+    // #given a room with no ceiling height and a door and socket that were never measured vertically
+    const unmeasured: RoomLayout = {
+      ...layout,
+      doors: [door({ wall: "north", offset: 300, width: 900 })],
+      utilities: [{ id: "utility_0003", type: "outlet", position: { x: 1_600, y: 2_060 } }],
+    };
+
+    // #when
+    const elevation = wallElevation(unmeasured, "north");
+
+    // #then
+    expect(elevation.ceilingMeasured).toBe(false);
+    expect(elevation.ceiling).toBe(2_300);
+    expect(elevation.items.map((item) => item.measured)).toEqual([false, false]);
   });
 });
 

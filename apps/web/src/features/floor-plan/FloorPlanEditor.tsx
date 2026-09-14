@@ -23,6 +23,7 @@ import { AccountControl } from "../account";
 import { checklistCompletion } from "../checklist/completion";
 import { HttpApiClient, HomeMeasureDatabase, LocalFirstRepository } from "../../local";
 import type { LocalProperty, LocalRoom } from "../../local";
+import { nominalHeights } from "@home-measure/domain";
 import {
   clampWallElement,
   cornerPoint,
@@ -55,6 +56,7 @@ import {
   utilityLabel,
   utilityRect,
   utilitySize,
+  wallElevation,
   wallElementAtClearance,
   wallElementClearances,
   wallNeighbours,
@@ -69,6 +71,8 @@ import {
   type SnapGuide,
   type SvgViewport,
   type Wall,
+  type WallElevation,
+  type WallElevationItem,
 } from "./geometry";
 
 type UtilityType = UtilityElement["type"];
@@ -487,6 +491,29 @@ export function FloorPlanEditor({
   function saveUtilitySize(room: LocalRoom, utility: UtilityElement, size: { width: number; height: number }) {
     const utilities = room.layout.utilities.map((item) => item.id === utility.id ? { ...item, size } : item);
     void saveRoomLayout(room, { ...room.layout, utilities });
+  }
+
+  /** An empty box clears the measurement rather than storing a guess as if it were one. */
+  function saveUtilityFloorHeight(room: LocalRoom, utility: UtilityElement, value: string) {
+    const utilities = room.layout.utilities.map((item) => {
+      if (item.id !== utility.id) return item;
+      const next = { ...item };
+      if (value.trim() === "") delete next.floorHeight;
+      else next.floorHeight = nonNegativeNumber(value, item.floorHeight ?? nominalHeights.utilityFloor);
+      return next;
+    });
+    void saveRoomLayout(room, { ...room.layout, utilities });
+  }
+
+  function saveCeilingHeight(room: LocalRoom, value: string) {
+    const layout = { ...room.layout };
+    if (value.trim() === "") delete layout.ceilingHeight;
+    else layout.ceilingHeight = positiveNumber(value, room.layout.ceilingHeight ?? nominalHeights.ceiling);
+    void saveRoomLayout(room, layout);
+  }
+
+  function selectElevationItem(room: LocalRoom, item: WallElevationItem) {
+    select({ kind: item.kind, roomId: room.id, elementId: item.id as ClientId });
   }
 
   /** Moves the room along one axis until the requested gap to that neighbour is exact. */
@@ -964,7 +991,7 @@ export function FloorPlanEditor({
       <aside ref={inspectorRef} className="inspector-pane" aria-label="선택한 객체 편집" role={inspectorOpen ? "dialog" : undefined} aria-modal={inspectorOpen || undefined}>
         <div className="inspector-mobile-heading"><strong>속성 · 체크리스트</strong><button type="button" onClick={() => { setInspectorOpen(false); inspectorTriggerRef.current?.focus(); }}>닫기</button></div>
         <div className="object-inspector">
-        <Inspector selection={selection} room={selectedRoom} gaps={gaps} onRoomName={saveRoomName} onRoomResize={(room, size) => void saveRoomLayout(room, resizeRoom(room.layout, size))} onRoomGap={saveRoomGap} onRoomNotch={(room, notch) => void saveRoomLayout(room, setRoomNotch(room.layout, notch))} onElementMove={saveElementClearance} onUtilityMove={saveUtilityPosition} onUtilityResize={saveUtilitySize} onRoomDelete={deleteRoom} onElementDelete={deleteSelectedElement} onDoorChange={updateDoor} onWindowChange={updateWindow} />
+        <Inspector selection={selection} room={selectedRoom} gaps={gaps} onRoomName={saveRoomName} onRoomResize={(room, size) => void saveRoomLayout(room, resizeRoom(room.layout, size))} onRoomGap={saveRoomGap} onRoomNotch={(room, notch) => void saveRoomLayout(room, setRoomNotch(room.layout, notch))} onElementMove={saveElementClearance} onUtilityMove={saveUtilityPosition} onUtilityResize={saveUtilitySize} onUtilityFloorHeight={saveUtilityFloorHeight} onCeilingHeight={saveCeilingHeight} onSelectElement={selectElevationItem} onRoomDelete={deleteRoom} onElementDelete={deleteSelectedElement} onDoorChange={updateDoor} onWindowChange={updateWindow} />
         </div>
         {inspectorSupplement?.({ property: selectedProperty, room: activeRoom, selection, select })}
       </aside>
@@ -1101,7 +1128,7 @@ function GapDimension({ gap, pixel }: { gap: RoomGap; pixel: number }) {
   </g>;
 }
 
-function Inspector({ selection, room, gaps, onRoomName, onRoomResize, onRoomGap, onRoomNotch, onElementMove, onUtilityMove, onUtilityResize, onRoomDelete, onElementDelete, onDoorChange, onWindowChange }: {
+function Inspector({ selection, room, gaps, onRoomName, onRoomResize, onRoomGap, onRoomNotch, onElementMove, onUtilityMove, onUtilityResize, onUtilityFloorHeight, onCeilingHeight, onSelectElement, onRoomDelete, onElementDelete, onDoorChange, onWindowChange }: {
   selection: FloorPlanSelection;
   room: LocalRoom | undefined;
   gaps: RoomGap[];
@@ -1112,22 +1139,25 @@ function Inspector({ selection, room, gaps, onRoomName, onRoomResize, onRoomGap,
   onElementMove: (room: LocalRoom, element: DoorElement | WindowElement, side: "start" | "end", clearance: number) => void;
   onUtilityMove: (room: LocalRoom, utility: UtilityElement, position: Point) => void;
   onUtilityResize: (room: LocalRoom, utility: UtilityElement, size: { width: number; height: number }) => void;
+  onUtilityFloorHeight: (room: LocalRoom, utility: UtilityElement, value: string) => void;
+  onCeilingHeight: (room: LocalRoom, value: string) => void;
+  onSelectElement: (room: LocalRoom, item: WallElevationItem) => void;
   onRoomDelete: (room: LocalRoom) => Promise<void>;
   onElementDelete: () => void;
   onDoorChange: (room: LocalRoom, elementId: ClientId, patch: Partial<DoorElement>) => void;
   onWindowChange: (room: LocalRoom, elementId: ClientId, patch: Partial<WindowElement>) => void;
 }) {
   if (!selection || !room) return <div className="empty-inspector"><h2>Inspector</h2><p>공간, 벽, 문, 창문 또는 설비를 선택하세요.</p></div>;
-  if (selection.kind === "room") return <div className="inspector-content"><p className="eyebrow">공간</p><h2>{room.name}</h2><label>공간 이름<input defaultValue={room.name} key={room.name} onBlur={(event) => void onRoomName(room, event.target.value)} aria-label="공간 이름" /></label><label>공간 가로 (mm)<input type="number" min="1" defaultValue={room.layout.size.width} key={`width-${room.layout.size.width}`} onBlur={(event) => onRoomResize(room, { width: positiveNumber(event.target.value, room.layout.size.width), height: room.layout.size.height })} aria-label="공간 가로 밀리미터" /></label><label>공간 세로 (mm)<input type="number" min="1" defaultValue={room.layout.size.height} key={`height-${room.layout.size.height}`} onBlur={(event) => onRoomResize(room, { width: room.layout.size.width, height: positiveNumber(event.target.value, room.layout.size.height) })} aria-label="공간 세로 밀리미터" /></label><p className="inspector-help">모서리 손잡이를 끌어 크기를 바꿀 수 있고, 치수를 줄이면 문·창문과 설비 위치를 새 경계 안으로 자동 보정합니다.</p><NotchEditor room={room} onRoomNotch={onRoomNotch} /><GapEditor room={room} gaps={gaps} onRoomGap={onRoomGap} /><button type="button" className="danger-action" onClick={() => void onRoomDelete(room)} aria-label="공간 삭제">공간 삭제</button></div>;
+  if (selection.kind === "room") return <div className="inspector-content"><p className="eyebrow">공간</p><h2>{room.name}</h2><label>공간 이름<input defaultValue={room.name} key={room.name} onBlur={(event) => void onRoomName(room, event.target.value)} aria-label="공간 이름" /></label><label>공간 가로 (mm)<input type="number" min="1" defaultValue={room.layout.size.width} key={`width-${room.layout.size.width}`} onBlur={(event) => onRoomResize(room, { width: positiveNumber(event.target.value, room.layout.size.width), height: room.layout.size.height })} aria-label="공간 가로 밀리미터" /></label><label>공간 세로 (mm)<input type="number" min="1" defaultValue={room.layout.size.height} key={`height-${room.layout.size.height}`} onBlur={(event) => onRoomResize(room, { width: room.layout.size.width, height: positiveNumber(event.target.value, room.layout.size.height) })} aria-label="공간 세로 밀리미터" /></label><label>천장 높이 (mm)<input type="number" min="1" placeholder={String(nominalHeights.ceiling)} defaultValue={room.layout.ceilingHeight ?? ""} key={`ceiling-${room.layout.ceilingHeight ?? "none"}`} onBlur={(event) => onCeilingHeight(room, event.target.value)} aria-label="천장 높이 밀리미터" /></label><p className="inspector-help">모서리 손잡이를 끌어 크기를 바꿀 수 있고, 치수를 줄이면 문·창문과 설비 위치를 새 경계 안으로 자동 보정합니다.</p><NotchEditor room={room} onRoomNotch={onRoomNotch} /><GapEditor room={room} gaps={gaps} onRoomGap={onRoomGap} /><button type="button" className="danger-action" onClick={() => void onRoomDelete(room)} aria-label="공간 삭제">공간 삭제</button></div>;
   if (selection.kind === "wall") {
     const wall = wallSegment(room.layout, selection.wall);
     const wallGaps = gaps.filter((gap) => gap.wall === selection.wall);
-    return <div className="inspector-content"><p className="eyebrow">벽</p><h2>{wallLabel(selection.wall)}</h2><p>길이 {wall.length} mm</p><GapEditor room={room} gaps={wallGaps} onRoomGap={onRoomGap} /><p className="inspector-help">하단의 문 또는 창문을 누른 뒤 이 벽을 누르면 배치됩니다.</p></div>;
+    return <div className="inspector-content"><p className="eyebrow">벽</p><h2>{wallLabel(selection.wall)}</h2><p>길이 {wall.length} mm</p><WallElevationView elevation={wallElevation(room.layout, selection.wall)} onSelect={(item) => onSelectElement(room, item)} /><GapEditor room={room} gaps={wallGaps} onRoomGap={onRoomGap} /><p className="inspector-help">하단의 문 또는 창문을 누른 뒤 이 벽을 누르면 배치됩니다.</p></div>;
   }
   if (selection.kind === "door") {
     const door = room.layout.doors.find((item) => item.id === selection.elementId);
     if (!door) return null;
-    return <div className="inspector-content"><p className="eyebrow">문</p><h2>문</h2><label>문 폭 (mm)<input data-inspector-element={door.id} type="number" min="1" value={door.width} onChange={(event) => onDoorChange(room, door.id, { width: positiveNumber(event.target.value, door.width) })} aria-label="문 폭 밀리미터" /></label><fieldset><legend>경첩</legend><div className="choice-row"><button type="button" aria-pressed={door.hinge === "left"} className={door.hinge === "left" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { hinge: "left" })} aria-label="왼쪽 경첩">왼쪽</button><button type="button" aria-pressed={door.hinge === "right"} className={door.hinge === "right" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { hinge: "right" })} aria-label="오른쪽 경첩">오른쪽</button></div></fieldset><fieldset><legend>열림</legend><div className="choice-row"><button type="button" aria-pressed={door.opening === "inward"} className={door.opening === "inward" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { opening: "inward" })} aria-label="안쪽으로 열림">안쪽</button><button type="button" aria-pressed={door.opening === "outward"} className={door.opening === "outward" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { opening: "outward" })} aria-label="바깥쪽으로 열림">바깥쪽</button></div></fieldset><WallClearanceEditor room={room} element={door} onMove={(side, clearance) => onElementMove(room, door, side, clearance)} /><p className="inspector-help">호(arc)가 실제 문 열림 방향을 나타냅니다. 방향키로 벽을 따라 10mm씩(Shift 100mm) 옮깁니다.</p><button type="button" className="danger-action" onClick={onElementDelete} aria-label="문 삭제">문 삭제</button></div>;
+    return <div className="inspector-content"><p className="eyebrow">문</p><h2>문</h2><label>문 폭 (mm)<input data-inspector-element={door.id} type="number" min="1" value={door.width} onChange={(event) => onDoorChange(room, door.id, { width: positiveNumber(event.target.value, door.width) })} aria-label="문 폭 밀리미터" /></label><label>문 높이 (mm)<input type="number" min="1" placeholder={String(nominalHeights.door)} defaultValue={door.height ?? ""} key={`door-height-${door.height ?? "none"}`} onBlur={(event) => onDoorChange(room, door.id, { height: positiveNumber(event.target.value, door.height ?? nominalHeights.door) })} aria-label="문 높이 밀리미터" /></label><fieldset><legend>경첩</legend><div className="choice-row"><button type="button" aria-pressed={door.hinge === "left"} className={door.hinge === "left" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { hinge: "left" })} aria-label="왼쪽 경첩">왼쪽</button><button type="button" aria-pressed={door.hinge === "right"} className={door.hinge === "right" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { hinge: "right" })} aria-label="오른쪽 경첩">오른쪽</button></div></fieldset><fieldset><legend>열림</legend><div className="choice-row"><button type="button" aria-pressed={door.opening === "inward"} className={door.opening === "inward" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { opening: "inward" })} aria-label="안쪽으로 열림">안쪽</button><button type="button" aria-pressed={door.opening === "outward"} className={door.opening === "outward" ? "selected" : ""} onClick={() => onDoorChange(room, door.id, { opening: "outward" })} aria-label="바깥쪽으로 열림">바깥쪽</button></div></fieldset><WallClearanceEditor room={room} element={door} onMove={(side, clearance) => onElementMove(room, door, side, clearance)} /><p className="inspector-help">호(arc)가 실제 문 열림 방향을 나타냅니다. 방향키로 벽을 따라 10mm씩(Shift 100mm) 옮깁니다.</p><button type="button" className="danger-action" onClick={onElementDelete} aria-label="문 삭제">문 삭제</button></div>;
   }
   if (selection.kind === "window") {
     const window = room.layout.windows.find((item) => item.id === selection.elementId);
@@ -1135,7 +1165,47 @@ function Inspector({ selection, room, gaps, onRoomName, onRoomResize, onRoomGap,
     return <div className="inspector-content"><p className="eyebrow">창문</p><h2>창문</h2><label>폭 (mm)<input data-inspector-element={window.id} type="number" min="1" value={window.width} onChange={(event) => onWindowChange(room, window.id, { width: positiveNumber(event.target.value, window.width) })} aria-label="창문 폭 밀리미터" /></label><label>높이 (mm)<input type="number" min="1" value={window.height} onChange={(event) => onWindowChange(room, window.id, { height: positiveNumber(event.target.value, window.height) })} aria-label="창문 높이 밀리미터" /></label><label>바닥 높이 (mm)<input type="number" min="0" value={window.sillHeight} onChange={(event) => onWindowChange(room, window.id, { sillHeight: nonNegativeNumber(event.target.value, window.sillHeight) })} aria-label="창문 바닥 높이 밀리미터" /></label><label>개폐 방식<select value={window.opening} onChange={(event) => onWindowChange(room, window.id, { opening: event.target.value as WindowElement["opening"] })} aria-label="창문 개폐 방식"><option value="sliding">미닫이</option><option value="casement">여닫이</option><option value="fixed">고정</option><option value="other">기타</option></select></label><WallClearanceEditor room={room} element={window} onMove={(side, clearance) => onElementMove(room, window, side, clearance)} /><p className="inspector-help">방향키로 벽을 따라 10mm씩(Shift 100mm) 옮깁니다.</p><button type="button" className="danger-action" onClick={onElementDelete} aria-label="창문 삭제">창문 삭제</button></div>;
   }
   const utility = room.layout.utilities.find((item) => item.id === selection.elementId);
-  return utility ? <div className="inspector-content"><p className="eyebrow">설비</p><h2>{utilityLabel(utility)}</h2><UtilityPlacementEditor room={room} utility={utility} onMove={(position) => onUtilityMove(room, utility, position)} onResize={(size) => onUtilityResize(room, utility, size)} /><p className="inspector-help">벽 가까이 놓으면 벽에 붙습니다. 방향키로 10mm씩(Shift 100mm) 옮깁니다.</p><button type="button" className="danger-action" onClick={onElementDelete} aria-label={`${utilityLabel(utility)} 삭제`}>{utilityLabel(utility)} 삭제</button></div> : null;
+  return utility ? <div className="inspector-content"><p className="eyebrow">설비</p><h2>{utilityLabel(utility)}</h2><label>바닥에서 높이 (mm)<input type="number" min="0" placeholder={String(nominalHeights.utilityFloor)} defaultValue={utility.floorHeight ?? ""} key={`floor-height-${utility.floorHeight ?? "none"}`} onBlur={(event) => onUtilityFloorHeight(room, utility, event.target.value)} aria-label="바닥에서 높이 밀리미터" /></label><UtilityPlacementEditor room={room} utility={utility} onMove={(position) => onUtilityMove(room, utility, position)} onResize={(size) => onUtilityResize(room, utility, size)} /><p className="inspector-help">벽 가까이 놓으면 벽에 붙습니다. 방향키로 10mm씩(Shift 100mm) 옮깁니다.</p><button type="button" className="danger-action" onClick={onElementDelete} aria-label={`${utilityLabel(utility)} 삭제`}>{utilityLabel(utility)} 삭제</button></div> : null;
+}
+
+/**
+ * The selected wall drawn face-on, so the heights of what is mounted on it are visible at a glance.
+ * Heights nobody has measured are drawn dashed and labelled, never as if they were readings.
+ */
+function WallElevationView({ elevation, onSelect }: {
+  elevation: WallElevation;
+  onSelect: (item: WallElevationItem) => void;
+}) {
+  const margin = Math.max(elevation.length, elevation.ceiling) * 0.06;
+  const width = elevation.length + margin * 2;
+  const height = elevation.ceiling + margin * 2;
+  const label = Math.max(width, height) * 0.045;
+  // The drawing is metres tall in real units, so flip the y axis to put the floor at the bottom.
+  const top = (item: WallElevationItem) => elevation.ceiling - item.bottom - item.height;
+  return (
+    <figure className="wall-elevation">
+      <figcaption>
+        벽 입면 · 천장 {elevation.ceiling.toLocaleString()} mm{elevation.ceilingMeasured ? "" : " (미입력)"}
+      </figcaption>
+      <svg viewBox={`${-margin} ${-margin} ${width} ${height}`} role="img" aria-label={`${wallLabel(elevation.wall)} 입면도`}>
+        <rect x="0" y="0" width={elevation.length} height={elevation.ceiling} className={elevation.ceilingMeasured ? "elevation-wall" : "elevation-wall assumed"} />
+        {elevation.items.map((item) => <g
+          key={item.id}
+          className={`elevation-item ${item.kind}${item.measured ? "" : " assumed"}`}
+          role="button"
+          tabIndex={0}
+          aria-label={`${item.label} 바닥에서 ${item.bottom} mm${item.measured ? "" : ", 높이 미입력"}`}
+          onClick={() => onSelect(item)}
+          onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(item); } }}
+        >
+          <rect x={item.offset} y={top(item)} width={item.width} height={item.height} />
+          <text x={item.offset + item.width / 2} y={top(item) + item.height + label * 1.2} style={{ fontSize: label }} textAnchor="middle">{item.bottom.toLocaleString()}</text>
+        </g>)}
+        <line x1="0" y1={elevation.ceiling} x2={elevation.length} y2={elevation.ceiling} className="elevation-floor" />
+      </svg>
+      {elevation.items.length === 0 && <p className="inspector-help">이 벽에 배치된 문·창문·설비가 없습니다.</p>}
+    </figure>
+  );
 }
 
 /** Positions a door or window by the run of wall left on each side, the way a tape measures it. */

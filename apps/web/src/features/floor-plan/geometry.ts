@@ -1,5 +1,6 @@
 import {
   defaultUtilitySize,
+  nominalHeights,
   type DoorElement,
   type RoomCorner,
   type RoomLayout,
@@ -332,6 +333,87 @@ export function clampWallElement<T extends Pick<DoorElement | WindowElement, "wa
   const length = wallSegment(layout, element.wall).length;
   const width = clamp(Math.round(element.width), 1, length);
   return { ...element, width, offset: clamp(Math.round(element.offset), 0, length - width) };
+}
+
+export interface WallElevationItem {
+  id: string;
+  kind: "door" | "window" | "utility";
+  label: string;
+  /** Distance along the wall from its clockwise start, and the height of the bottom edge. */
+  offset: number;
+  bottom: number;
+  width: number;
+  height: number;
+  /** False when a height had to be assumed because nobody has measured it yet. */
+  measured: boolean;
+}
+
+export interface WallElevation {
+  wall: Wall;
+  length: number;
+  ceiling: number;
+  ceilingMeasured: boolean;
+  items: WallElevationItem[];
+}
+
+/**
+ * The wall seen face-on: what is on it and how high off the floor. A plan says where a socket is in
+ * the room, an elevation says where it is on the wall, which is the number someone needs when
+ * deciding whether a fridge or a desk will actually fit in front of it.
+ */
+export function wallElevation(layout: RoomLayout, wall: Wall, utilityReach = 400): WallElevation {
+  const segment = wallSegment(layout, wall);
+  const direction = unitDirection(segment);
+  const items: WallElevationItem[] = [];
+  for (const door of layout.doors.filter((element) => element.wall === wall)) {
+    items.push({
+      id: door.id,
+      kind: "door",
+      label: "문",
+      offset: door.offset,
+      bottom: 0,
+      width: door.width,
+      height: door.height ?? nominalHeights.door,
+      measured: door.height !== undefined,
+    });
+  }
+  for (const window of layout.windows.filter((element) => element.wall === wall)) {
+    items.push({
+      id: window.id,
+      kind: "window",
+      label: "창문",
+      offset: window.offset,
+      bottom: window.sillHeight,
+      width: window.width,
+      height: window.height,
+      measured: true,
+    });
+  }
+  for (const utility of layout.utilities) {
+    const projected = (utility.position.x - segment.start.x) * direction.x + (utility.position.y - segment.start.y) * direction.y;
+    if (projected < 0 || projected > segment.length) continue;
+    const onWall = { x: segment.start.x + direction.x * projected, y: segment.start.y + direction.y * projected };
+    const size = utilitySize(utility);
+    // Only what is mounted on this wall belongs in its elevation.
+    if (Math.hypot(utility.position.x - onWall.x, utility.position.y - onWall.y) > utilityReach) continue;
+    items.push({
+      id: utility.id,
+      kind: "utility",
+      label: utilityLabel(utility),
+      offset: Math.round(projected - size.width / 2),
+      bottom: utility.floorHeight ?? nominalHeights.utilityFloor,
+      width: size.width,
+      height: size.height,
+      measured: utility.floorHeight !== undefined,
+    });
+  }
+  return {
+    wall,
+    length: segment.length,
+    ceiling: layout.ceilingHeight ?? nominalHeights.ceiling,
+    ceilingMeasured: layout.ceilingHeight !== undefined,
+    items: items.sort((left, right) => left.offset - right.offset),
+  };
 }
 
 export function utilitySize(utility: Pick<UtilityElement, "size">): { width: number; height: number } {

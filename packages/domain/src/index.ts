@@ -86,6 +86,8 @@ export const doorElementSchema = z.object({
   wall: wallSchema,
   offset: millimetersSchema,
   width: positiveMillimetersSchema,
+  /** Opening height above the floor. Absent until someone measures it. */
+  height: positiveMillimetersSchema.optional(),
   hinge: hingeSideSchema,
   opening: openingDirectionSchema,
   note: z.string().trim().max(2_000).optional(),
@@ -110,12 +112,24 @@ export const elementSizeSchema = z.object({
 /** Default footprint for a utility drawn without its own measured size. */
 export const defaultUtilitySize = { width: 120, height: 120 } as const;
 
+/**
+ * Heights used only to draw a wall before anyone has measured it. They are never written to a
+ * record: an elevation marks them as unmeasured so a guess is not mistaken for a reading.
+ */
+export const nominalHeights = {
+  ceiling: 2_300,
+  door: 2_100,
+  utilityFloor: 300,
+} as const;
+
 export const utilityElementSchema = z.object({
   id: clientIdSchema,
   type: utilityTypeSchema,
   /** Centre of the footprint, so an older record without a size keeps the same anchor point. */
   position: pointSchema,
   size: elementSizeSchema.optional(),
+  /** Height of the bottom edge above the floor, which is what a tape reads on site. */
+  floorHeight: millimetersSchema.optional(),
   note: z.string().trim().max(2_000).optional(),
 }).strict();
 
@@ -138,6 +152,8 @@ export const roomLayoutSchema = z.object({
     height: positiveMillimetersSchema,
   }).strict(),
   notch: roomNotchSchema.optional(),
+  /** Floor-to-ceiling height, needed to draw a wall rather than only the floor plan. */
+  ceilingHeight: positiveMillimetersSchema.optional(),
   doors: z.array(doorElementSchema).max(64),
   windows: z.array(windowElementSchema).max(64),
   utilities: z.array(utilityElementSchema).max(128),

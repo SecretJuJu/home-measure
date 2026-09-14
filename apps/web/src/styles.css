@@ -346,6 +346,65 @@ label {
   vector-effect: non-scaling-stroke;
 }
 
+/* The wall seen face-on, drawn at the panel width with the floor at the bottom. */
+.wall-elevation {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.wall-elevation figcaption {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+.wall-elevation svg {
+  width: 100%;
+  height: auto;
+  background: var(--surface-subtle);
+  border-radius: var(--radius);
+}
+
+.elevation-wall {
+  fill: var(--surface);
+  stroke: var(--ink);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
+
+.elevation-wall.assumed {
+  stroke-dasharray: 5 4;
+}
+
+.elevation-floor {
+  stroke: var(--ink);
+  stroke-width: 3px;
+  vector-effect: non-scaling-stroke;
+}
+
+.elevation-item {
+  cursor: pointer;
+}
+
+.elevation-item rect {
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+}
+
+.elevation-item.door rect { fill: var(--surface-subtle); stroke: var(--muted); }
+.elevation-item.window rect { fill: var(--accent-soft); stroke: var(--accent); }
+.elevation-item.utility rect { fill: var(--warning-soft); stroke: var(--warning); }
+.elevation-item.assumed rect { stroke-dasharray: 5 4; }
+
+.elevation-item text {
+  fill: var(--muted);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.elevation-item.assumed text { font-style: italic; }
+
 .notch-editor {
   display: grid;
   gap: 0.5rem;

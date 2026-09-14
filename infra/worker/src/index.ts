@@ -91,6 +91,9 @@ const sessionLifetimeSeconds = 30 * 24 * 60 * 60;
 const maxPhotoUploadBytes = 12 * 1024 * 1024;
 const allowedPhotoMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 
+/** Raised when a create targets an ID that belongs to a different account. */
+class OwnedByAnotherAccount extends Error {}
+
 function jsonError(status: number, code: "invalid_request" | "unauthorized" | "not_found" | "conflict" | "internal_error" ): Response {
   return Response.json({ error: code }, { status });
 }
@@ -430,6 +433,7 @@ function asRoom(row: RoomRow): Record<string, unknown> {
 export function createApp(): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   app.onError((error) => {
+    if (error instanceof OwnedByAnotherAccount) return jsonError(409, "conflict");
     // Clients still learn nothing, but the message reaches `wrangler tail` instead of vanishing.
     console.error("unhandled request error:", error instanceof Error ? error.message : String(error));
     return jsonError(500, "internal_error");
@@ -483,10 +487,16 @@ export function createApp(): Hono<AppEnv> {
     const user = context.get("authUser");
     const result = await runMutation(context.env.DB, user.id, input.clientMutationId, async () => {
       const timestamp = now();
-      await context.env.DB.prepare(
+      // A device may upload a record it already synced, so re-creating your own row refreshes it.
+      // The owner check in the conflict clause keeps someone else's ID from being taken over.
+      const written = await context.env.DB.prepare(
         `INSERT INTO properties (id, user_id, name, address, note, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(input.data.id, user.id, input.data.name, input.data.address ?? null, input.data.note ?? null, timestamp, timestamp).run();
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, address = excluded.address,
+           note = excluded.note, updated_at = excluded.updated_at
+         WHERE properties.user_id = ?`,
+      ).bind(input.data.id, user.id, input.data.name, input.data.address ?? null, input.data.note ?? null, timestamp, timestamp, user.id).run();
+      if (written.meta.changes !== 1) throw new OwnedByAnotherAccount();
       return { status: 201, body: { property: { ...input.data, address: input.data.address ?? null, note: input.data.note ?? null, createdAt: timestamp, updatedAt: timestamp } } };
     });
     return Response.json(result.body, { status: result.status });
@@ -549,10 +559,14 @@ export function createApp(): Hono<AppEnv> {
     if (!await ownsProperty(context.env.DB, propertyId, user.id)) return jsonError(404, "not_found");
     const result = await runMutation(context.env.DB, user.id, input.clientMutationId, async () => {
       const timestamp = now();
-      await context.env.DB.prepare(
+      const written = await context.env.DB.prepare(
         `INSERT INTO rooms (id, property_id, name, type, layout_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(input.data.id, propertyId, input.data.name, input.data.type, JSON.stringify(input.data.layout), timestamp, timestamp).run();
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, type = excluded.type,
+           layout_json = excluded.layout_json, updated_at = excluded.updated_at
+         WHERE rooms.property_id = ?`,
+      ).bind(input.data.id, propertyId, input.data.name, input.data.type, JSON.stringify(input.data.layout), timestamp, timestamp, propertyId).run();
+      if (written.meta.changes !== 1) throw new OwnedByAnotherAccount();
       return { status: 201, body: { room: { ...input.data, propertyId, createdAt: timestamp, updatedAt: timestamp } } };
     });
     return Response.json(result.body, { status: result.status });

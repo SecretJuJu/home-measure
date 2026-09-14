@@ -4,6 +4,7 @@ import { createStore, type StoreApi } from "zustand/vanilla";
 
 import { ApiRequestError, type ApiClient } from "./api-client";
 import { HomeMeasureDatabase } from "./database";
+import { createOperation, parentOf } from "./recovery";
 import type {
   LocalChecklistItem,
   LocalEntity,
@@ -79,6 +80,18 @@ function mergeEntities<T extends LocalEntity>(persisted: T[], current: Record<st
 
 function syncErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unable to synchronize local changes";
+}
+
+/** A 404 on a queued write means the record is not on the server, not that the request was wrong. */
+function isMissingOnServerError(error: unknown): boolean {
+  return error instanceof ApiRequestError && error.status === 404;
+}
+
+function newMutationId(): ClientMutationId {
+  const entropy = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID().replaceAll("-", "")
+    : `${Date.now()}${Math.random().toString(36).slice(2)}`;
+  return `mutation_${entropy}` as ClientMutationId;
 }
 
 function isOfflineError(error: unknown): boolean {
@@ -166,6 +179,14 @@ export class LocalFirstRepository {
       const existing = await this.db.operations.get(operation.clientMutationId);
       if (existing) return;
       await table.put(entity);
+      // A full-replacement write supersedes an earlier one for the same target that never left the
+      // device, so editing a plan offline queues one upload rather than one per nudge.
+      if (operation.method === "PUT") {
+        const superseded = await this.db.operations
+          .filter((queued) => queued.method === "PUT" && queued.path === operation.path && queued.attempts === 0)
+          .toArray();
+        await this.db.operations.bulkDelete(superseded.map((queued) => queued.clientMutationId));
+      }
       const previous = await this.db.operations.orderBy("sequence").last();
       await this.db.operations.add({ ...operation, sequence: (previous?.sequence ?? 0) + 1 });
     });
@@ -274,6 +295,7 @@ export class LocalFirstRepository {
   }
 
   private async flushPendingOperations(): Promise<void> {
+    const restored = new Set<ClientId>();
     while (true) {
       const operation = await this.db.operations.orderBy("sequence").first();
       if (!operation) {
@@ -288,6 +310,7 @@ export class LocalFirstRepository {
       try {
         await this.apiClient.send(operation);
       } catch (error) {
+        if (isMissingOnServerError(error) && await this.repairMissingEntity(operation, restored)) continue;
         const message = syncErrorMessage(error);
         await this.db.operations.update(operation.clientMutationId, {
           attempts: operation.attempts + 1,
@@ -303,6 +326,35 @@ export class LocalFirstRepository {
 
       await this.acknowledgeOperation(operation);
     }
+  }
+
+  /**
+   * The server does not have this record, so no retry of an update can ever land. Replace the dead
+   * operation with the create built from what the device still holds, restoring the parent first
+   * when that is missing too. A delete of an absent record has already got what it wanted.
+   */
+  private async repairMissingEntity(operation: QueuedOperation, restored: Set<ClientId>): Promise<boolean> {
+    if (operation.method === "DELETE") {
+      await this.db.operations.delete(operation.clientMutationId);
+      this.store.setState({ pendingOperationCount: await this.db.operations.count() });
+      return true;
+    }
+    const missing = operation.method === "POST" ? parentOf(operation.entityKind) : operation.entityKind;
+    if (!missing) return false;
+    const entityId = missing === operation.entityKind ? operation.entityId : operation.propertyId;
+    if (restored.has(entityId)) return false;
+    const entity = await databaseTableFor(this.db, missing).get(entityId);
+    if (!entity) return false;
+    restored.add(entityId);
+    const replacement = createOperation(missing, entity, newMutationId());
+    await this.db.transaction("rw", this.db.operations, async () => {
+      // Take the failing slot when the entity itself is missing; sit in front of it for a parent.
+      const sequence = missing === operation.entityKind ? operation.sequence : operation.sequence - 0.5;
+      if (missing === operation.entityKind) await this.db.operations.delete(operation.clientMutationId);
+      await this.db.operations.add({ ...replacement, createdAt: Date.now(), attempts: 0, sequence });
+    });
+    this.store.setState({ pendingOperationCount: await this.db.operations.count() });
+    return true;
   }
 
   private async acknowledgeOperation(operation: QueuedOperation): Promise<void> {
