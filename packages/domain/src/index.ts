@@ -361,6 +361,8 @@ const annotationAxisSchema = z.number().finite().min(-0.25).max(1.25);
 export const annotationPointSchema = z.object({
   x: annotationAxisSchema,
   y: annotationAxisSchema,
+  /** Stylus pressure at this point, when the device reports it. Absent for a finger or a mouse. */
+  pressure: z.number().finite().min(0).max(1).optional(),
 }).strict();
 
 const annotationTextSchema = z.string().trim().max(40);

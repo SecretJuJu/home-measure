@@ -1173,12 +1173,10 @@ textarea { width: 100%; min-height: 88px; resize: vertical; border: 1px solid va
   text-align: center;
 }
 
+/* The stroke is a filled shape, so its width can change along the line the way a nib does. */
 .sketch-mark.pen {
-  stroke: #e2483f;
-  stroke-width: 4px;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  vector-effect: non-scaling-stroke;
+  fill: #e2483f;
+  stroke: none;
 }
 
 .sketch-mark.measure line {

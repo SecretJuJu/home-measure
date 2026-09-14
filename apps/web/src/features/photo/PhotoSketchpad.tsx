@@ -5,9 +5,9 @@ import type { LocalPhotoMetadata } from "../../local";
 import {
   appendPoint,
   markAt,
+  inkOutline,
   markMidpoint,
   meaningfulMarks,
-  penPath,
   toAnnotationPoint,
   type AnnotationTool,
 } from "./annotation";
@@ -40,6 +40,8 @@ export function PhotoSketchpad({ photo, source, onSave, onClose }: PhotoSketchpa
   const [saving, setSaving] = useState(false);
   const sheetRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLInputElement>(null);
+  /** Once a stylus has been seen, a touch is a resting palm rather than a second pen. */
+  const stylusSeen = useRef(false);
 
   const aspect = photo.width && photo.height ? photo.width / photo.height : 4 / 3;
   const visible = useMemo(() => (drawing ? [...marks, drawing] : marks), [marks, drawing]);
@@ -48,13 +50,20 @@ export function PhotoSketchpad({ photo, source, onSave, onClose }: PhotoSketchpa
     if (editing) textRef.current?.focus();
   }, [editing]);
 
-  function pointFrom(event: ReactPointerEvent<HTMLDivElement>): AnnotationPoint | null {
+  function pointFrom(event: { clientX: number; clientY: number; pressure?: number }): AnnotationPoint | null {
     const bounds = sheetRef.current?.getBoundingClientRect();
     if (!bounds) return null;
-    return toAnnotationPoint({ x: event.clientX, y: event.clientY }, bounds);
+    return toAnnotationPoint({ x: event.clientX, y: event.clientY, pressure: event.pressure }, bounds);
+  }
+
+  /** True when this pointer should be ignored: a palm resting while the pencil is in use. */
+  function rejected(event: ReactPointerEvent<HTMLDivElement>): boolean {
+    if (event.pointerType === "pen") { stylusSeen.current = true; return false; }
+    return stylusSeen.current && event.pointerType === "touch";
   }
 
   function handlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (rejected(event)) return;
     const point = pointFrom(event);
     if (!point) return;
     if (typeof event.currentTarget.setPointerCapture === "function") event.currentTarget.setPointerCapture(event.pointerId);
@@ -77,12 +86,23 @@ export function PhotoSketchpad({ photo, source, onSave, onClose }: PhotoSketchpa
   }
 
   function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!drawing) return;
-    const point = pointFrom(event);
-    if (!point) return;
-    setDrawing(drawing.kind === "pen"
-      ? { ...drawing, points: appendPoint(drawing.points, point) }
-      : drawing.kind === "measure" ? { ...drawing, end: point } : drawing);
+    if (!drawing || rejected(event)) return;
+    if (drawing.kind === "measure") {
+      const point = pointFrom(event);
+      if (point) setDrawing({ ...drawing, end: point });
+      return;
+    }
+    if (drawing.kind !== "pen") return;
+    // The screen samples faster than it paints; coalesced events give back the points a fast
+    // stroke would otherwise lose, which is most of what makes a line look hand-drawn.
+    const native = event.nativeEvent;
+    const samples = typeof native.getCoalescedEvents === "function" ? native.getCoalescedEvents() : [native];
+    let points = drawing.points;
+    for (const sample of samples.length > 0 ? samples : [native]) {
+      const point = pointFrom(sample);
+      if (point) points = appendPoint(points, point);
+    }
+    if (points !== drawing.points) setDrawing({ ...drawing, points });
   }
 
   function handlePointerUp() {
@@ -179,7 +199,7 @@ export function PhotoSketchpad({ photo, source, onSave, onClose }: PhotoSketchpa
 function MarkDrawing({ mark, active }: { mark: PhotoMark; active: boolean }) {
   const className = `sketch-mark ${mark.kind}${active ? " active" : ""}`;
   if (mark.kind === "pen") {
-    return <path className={className} d={penPath(mark.points, 1_000, 1_000)} fill="none" />;
+    return <path className={className} d={inkOutline(mark.points, { width: 1_000, height: 1_000 }, 7)} />;
   }
   if (mark.kind === "note") {
     return <g className={className}>
